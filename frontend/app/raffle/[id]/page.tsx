@@ -374,6 +374,36 @@ export default function RaffleDetailPage({
         </Card>
       </motion.div>
 
+      {/* Draw progress / errors — shown regardless of raffle status */}
+      {drawStep && !isDrawing && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <Card className="p-6 text-center">
+            {drawStep.startsWith("Error") ? (
+              <>
+                <p className="text-red-400 mb-4">{drawStep}</p>
+                <p className="text-sm text-gray-500">The raffle may be partially closed. Contact the operator.</p>
+              </>
+            ) : (
+              <>
+                <div className="relative w-16 h-16 mx-auto mb-4">
+                  <motion.div
+                    className="w-16 h-16 rounded-full border-4 border-gray-700 border-t-mint"
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                  />
+                </div>
+                <p className="text-cream font-medium mb-1">{drawStep}</p>
+                <p className="text-sm text-gray-500">Please don&apos;t close this page.</p>
+              </>
+            )}
+          </Card>
+        </motion.div>
+      )}
+
       {/* Drawing animation */}
       {isDrawing && participantLabels.length > 0 && (
         <motion.div

@@ -33,6 +33,9 @@ const ALLOWED_ORIGINS = [
 
 const app = express();
 
+// Trust proxy (Cloudflare Tunnel)
+app.set("trust proxy", true);
+
 // ── Security ────────────────────────────────────────────────────────────────
 
 app.use(helmet());
@@ -54,6 +57,7 @@ const proofLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
   message: { error: "Too many proof requests. Try again in a minute." },
+  validate: { xForwardedForHeader: false },
 });
 
 // ── Startup checks ──────────────────────────────────────────────────────────

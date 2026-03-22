@@ -164,7 +164,7 @@ async function main() {
   try {
     execSync(
       `bb prove -s ultra_honk --oracle_hash keccak -b "${artifactPath}" -w "${witnessPath}" -o "${proofDir}"`,
-      { stdio: ["pipe", "pipe", "pipe"], timeout: 120000 }
+      { stdio: ["pipe", "pipe", "pipe"], timeout: 180000, cwd: resolve(__dirname, "../circuits/shuffle") }
     );
   } catch (err) {
     process.stderr.write(`bb prove failed: ${err.stderr?.toString() || err.message}\n`);
