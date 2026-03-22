@@ -1,0 +1,16 @@
+{
+  "name": "raffero-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compute-commitment": "node compute-commitment.mjs",
+    "prove-claim": "node prove-claim.mjs",
+    "generate-shuffle-proof": "node generate-shuffle-proof.mjs",
+    "build-merkle-proof": "node build-merkle-proof.mjs"
+  },
+  "dependencies": {
+    "@noir-lang/noir_js": "1.0.0-beta.9",
+    "@aztec/bb.js": "0.87.0"
+  }
+}
