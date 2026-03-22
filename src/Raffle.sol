@@ -1,535 +1,272 @@
-/*
-██████╗░░█████╗░███████╗███████╗███████╗██████╗░░█████╗░
-██╔══██╗██╔══██╗██╔════╝██╔════╝██╔════╝██╔══██╗██╔══██╗
-██████╔╝███████║█████╗░░█████╗░░█████╗░░██████╔╝██║░░██║
-██╔══██╗██╔══██║██╔══╝░░██╔══╝░░██╔══╝░░██╔══██╗██║░░██║
-██║░░██║██║░░██║██║░░░░░██║░░░░░███████╗██║░░██║╚█████╔╝
-╚═╝░░╚═╝╚═╝░░╚═╝╚═╝░░░░░╚═╝░░░░░╚══════╝╚═╝░░╚═╝░╚════╝░
-
-    https://raffero.com
-*/
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IncrementalMerkleTree, Poseidon2} from "./IncrementalMerkleTree.sol";
-import {IVerifier} from "./UltraVerifier.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {ISupraRouter} from "./interfaces/ISupraRouter.sol";
+/// @notice Poseidon hash (arity-2) interface. Must return H(a, b) as a single uint256.
+interface IPoseidon2 {
+    function poseidon(uint[2] calldata inputs) external view returns (uint256);
+}
+
+/// @notice Circom/snarkjs verifier interface generated for the circuit used here.
+/// @dev The verifier must expect pubSignals in the exact order produced by the circuit.
+interface ICircomVerifier {
+    function verifyProof(
+        uint[2] calldata _pA,
+        uint[2][2] calldata _pB,
+        uint[2] calldata _pC,
+        uint[24] calldata _pubSignals
+    ) external view returns (bool);
+}
 
 /**
  * @title PrivateRaffle
- * @notice Zero-Knowledge private raffle system where winners are completely anonymous
- * @dev Uses Noir ZK proofs for privacy and dVRF for winner selection
- *      Uses Poseidon2 hash function for cryptographic compatibility with ZK circuit
+ * @notice Merkle-based private raffle where the winner proves membership and winner index in ZK.
+ * @dev Circuit pubSignals order (MUST match the deployed verifier):
+ *      [0] nullifierHash
+ *      [1] recipientBinding
+ *      [2] root
+ *      [3] raffleId
+ *      [4..4+levels-1] winnerIndexBits[i]  // bit i (LSB-first)
  */
-contract PrivateRaffle is IncrementalMerkleTree, ReentrancyGuard {
-    // =========================================================================
-    // TYPES
-    // =========================================================================
-
-    enum RaffleStatus {
-        Active, // Accepting tickets
-        Closed, // Winner selected, ready for claim
-        Claimed // Prize claimed
-    }
-
-    enum PrizeType {
-        NativeToken // ETH or native token (expandable to NFT/ERC20 later)
-    }
-
+contract PrivateRaffle {
     struct Raffle {
-        // Configuration
-        address creator;
-        uint256 ticketPrice; // Price per ticket in wei
-        uint256 maxParticipants; // 2^levels
-        uint256 duration; // Duration in seconds
-        uint256 endTime; // When ticket sales end
-        // Merkle tree state
-        uint256 levels; // Tree height
-        uint256 nextIndex; // Next leaf index
-        bytes32 root; // Current Merkle root
-        // Prize
-        PrizeType prizeType;
-        uint256 prizePool; // Total prize in wei
-        // Status
-        RaffleStatus status;
-        uint256 winnerIndex; // Winning leaf index (set by VRF)
-        // dVRF
-        uint256 requestId;
-        bool randomnessRequested;
-        // Timing
-        uint256 createdAt;
+        uint256 levels; // Merkle height
+        uint256 ticketPrice; // wei
+        uint256 maxSize; // 2^levels
+        uint256 nextIndex; // next leaf index
+        uint256 root; // current Merkle root
+        uint256[] filledSubtrees;
+        uint256[] emptySubtrees;
+        bool open; // selling tickets
+        bool winnerSet; // winnerIndex finalized
+        uint256 winnerIndex; // 0..nextIndex-1
+        uint256 prizePool; // wei
     }
-
-    struct ClaimInputs {
-        bytes32 root;
-        bytes32 nullifierHash;
-        bytes32 recipientBinding;
-        uint256 raffleId;
-        uint256 winnerIndex;
-        uint256 treeDepth;
-    }
-
-    // =========================================================================
-    // STATE VARIABLES
-    // =========================================================================
 
     address public owner;
-    IVerifier public verifier;
-    ISupraRouter public supraRouter;
+    IPoseidon2 public poseidon2;
+    ICircomVerifier public verifier;
 
-    uint256 public raffleCounter;
-    uint256 public constant MAX_LEVELS = 32;
-    uint256 public constant MODULUS =
-        21888242871839275222246405745257275088548364400416034343698204186575808495617;
-    bytes32 public constant ZERO_VALUE =
-        bytes32(uint256(keccak256("raffero")) % MODULUS);
+    // raffleId => Raffle
+    mapping(uint256 => Raffle) public raffles;
 
-    // Raffle data
-    mapping(uint256 => Raffle) private raffles;
-    mapping(uint256 => mapping(uint256 => bytes32)) public commitments; // raffleId => index => commitment
+    // Optional audit trail: (raffleId, index) -> commitment (leaf)
+    mapping(uint256 => mapping(uint256 => uint256)) public commitments;
 
-    // Double-claim protection
-    mapping(uint256 => mapping(bytes32 => bool)) public commitmentUsed; // raffleId => commitment => used
-    mapping(uint256 => mapping(bytes32 => bool)) public nullifierUsed; // raffleId => nullifierHash => used
-    mapping(uint256 => uint256) public requestToRaffle; // requestId => raffleId
-    // =========================================================================
-    // EVENTS
-    // =========================================================================
+    // Double-claim protection: (raffleId, nullifierHash) -> used
+    mapping(uint256 => mapping(uint256 => bool)) public nullifiers;
 
     event RaffleCreated(
         uint256 indexed raffleId,
-        address indexed creator,
-        uint256 ticketPrice,
-        uint256 maxParticipants,
-        uint256 duration,
-        uint256 prizeAmount
-    );
-
-    event TicketPurchased(
-        uint256 indexed raffleId,
-        uint256 indexed leafIndex,
-        bytes32 commitment
-    );
-
-    event WinnerSelected(uint256 indexed raffleId, uint256 winnerIndex);
-
-    event PrizeClaimed(
-        uint256 indexed raffleId,
-        uint256 amount,
-        bytes32 nullifierHash
-    );
-
-    event RelayerPaid(
-        uint256 indexed raffleId,
-        address indexed relayer,
-        uint256 fee
-    );
-
-    event RandomnessRequested(uint256 indexed raffleId, uint256 requestId);
-
-    // =========================================================================
-    // ERRORS
-    // =========================================================================
-
-    error OnlyOwner();
-    error RaffleNotActive(RaffleStatus status);
-    error RaffleNotClosed(RaffleStatus status);
-    error RaffleAlreadyClaimed();
-    error InvalidTicketPrice(uint256 amount, uint256 ticketPrice);
-    error RaffleFull(uint256 nextIndex, uint256 maxParticipants);
-    error RaffleEnded(uint256 timestamp, uint256 endTime);
-    error RaffleNotEnded(uint256 timestamp, uint256 endTime);
-    error NoParticipants(uint256 nextIndex);
-    error InvalidProof();
-    error NullifierAlreadyUsed();
-    error TransferFailed();
-    error InvalidRecipientBinding(
-        bytes32 recipientBinding,
-        bytes32 expectedBinding
-    );
-    error NotWinner(uint256 proofWinnerIndex, uint256 winnerIndex);
-    error InvalidRootMismatch(bytes32 proofRoot, bytes32 root);
-    error InvalidRaffleId(uint256 proofRaffleId, uint256 raffleId);
-    error InvalidLevels(uint256 levels);
-    error InvalidDuration(uint256 duration);
-    error InvalidPrize(uint256 prize);
-    error CommitmentAlreadyUsed();
-    error VRFAlreadyRequested();
-    error OnlySupraRouter();
-
-    // =========================================================================
-    // MODIFIERS
-    // =========================================================================
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert OnlyOwner();
-        _;
-    }
-
-    modifier onlySupraRouter() {
-        if (msg.sender != address(supraRouter)) revert OnlySupraRouter();
-        _;
-    }
-
-    // =========================================================================
-    // CONSTRUCTOR
-    // =========================================================================
-
-    /**
-     * @param _verifier Address of the Noir proof verifier contract
-     * @param _poseidon2 Address of the deployed Poseidon2 hash contract (poseidon2-evm)
-     */
-    constructor(
-        address _verifier,
-        address _poseidon2,
-        address _supraRouter
-    ) IncrementalMerkleTree(Poseidon2(_poseidon2)) {
-        owner = msg.sender;
-        verifier = IVerifier(_verifier);
-        supraRouter = ISupraRouter(_supraRouter);
-    }
-
-    // =========================================================================
-    // ADMIN FUNCTIONS
-    // =========================================================================
-
-    function setVerifier(address _verifier) external onlyOwner {
-        verifier = IVerifier(_verifier);
-    }
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
-    }
-
-    // =========================================================================
-    // RAFFLE CREATION
-    // =========================================================================
-
-    /**
-     * @notice Create a new raffle with native token prize
-     * @param ticketPrice Price per ticket in wei
-     * @param levels Merkle tree height (max participants = 2^levels)
-     * @param duration Duration in seconds
-     */
-    function createRaffle(
         uint256 ticketPrice,
         uint256 levels,
-        uint256 duration
-    ) external payable nonReentrant returns (uint256 raffleId) {
-        if (levels > MAX_LEVELS || levels == 0) revert InvalidLevels(levels);
-        if (duration == 0) revert InvalidDuration(duration);
-        if (msg.value == 0) revert InvalidPrize(msg.value);
+        uint256 maxSize
+    );
+    event TicketDeposited(
+        uint256 indexed raffleId,
+        uint256 index,
+        uint256 commitment
+    );
+    event RaffleClosed(uint256 indexed raffleId, uint256 winnerIndex);
+    event PrizeClaimed(
+        uint256 indexed raffleId,
+        address indexed to,
+        uint256 amount,
+        uint256 nullifierHash
+    );
 
-        raffleId = ++raffleCounter;
+    modifier onlyOwner() {
+        require(msg.sender == owner, "ONLY_OWNER");
+        _;
+    }
+
+    constructor(address poseidon2Addr, address verifierAddr) {
+        owner = msg.sender;
+        poseidon2 = IPoseidon2(poseidon2Addr);
+        verifier = ICircomVerifier(verifierAddr);
+    }
+
+    /* ───────────────────────────── Admin ───────────────────────────── */
+
+    /**
+     * @notice Create a raffle with fixed capacity (2^levels) and ticket price.
+     * @param raffleId Unique identifier.
+     * @param ticketPrice Price per ticket (wei).
+     * @param levels Merkle height (capacity = 2^levels).
+     */
+    function createRaffle(
+        uint256 raffleId,
+        uint256 ticketPrice,
+        uint256 levels
+    ) external onlyOwner {
+        require(raffles[raffleId].ticketPrice == 0, "RAFFLE_EXISTS");
+        require(levels > 0 && levels <= 64, "LEVELS_RANGE");
 
         uint256 maxSize = uint256(1) << levels;
 
         Raffle storage r = raffles[raffleId];
-        r.creator = msg.sender;
-        r.ticketPrice = ticketPrice;
-        r.maxParticipants = maxSize;
         r.levels = levels;
-        r.duration = duration;
-        r.endTime = block.timestamp + duration;
-        r.prizeType = PrizeType.NativeToken;
-        r.prizePool = msg.value;
-        r.status = RaffleStatus.Active;
-        r.createdAt = block.timestamp;
+        r.ticketPrice = ticketPrice;
+        r.maxSize = maxSize;
+        r.open = true;
 
-        // Initialize Merkle tree with empty subtrees
-        _initTree(raffleId, uint32(levels));
-        r.root = getLastRoot(raffleId);
-        r.nextIndex = getNextLeafIndex(raffleId);
+        r.filledSubtrees = new uint256[](levels);
+        r.emptySubtrees = new uint256[](levels);
 
-        emit RaffleCreated(
-            raffleId,
-            msg.sender,
-            ticketPrice,
-            maxSize,
-            duration,
-            msg.value
-        );
-    }
-
-    // =========================================================================
-    // TICKET PURCHASE
-    // =========================================================================
-
-    /**
-     * @notice Purchase a ticket by submitting a commitment
-     * @dev Should be called through a relayer for maximum privacy
-     * @param raffleId The raffle to join
-     * @param commitment Poseidon2(secret, nullifier) computed off-chain
-     */
-    function purchaseTicket(
-        uint256 raffleId,
-        bytes32 commitment
-    ) external payable {
-        Raffle storage r = raffles[raffleId];
-
-        if (r.status != RaffleStatus.Active) revert RaffleNotActive(r.status);
-        if (block.timestamp >= r.endTime)
-            revert RaffleEnded(block.timestamp, r.endTime);
-        if (r.nextIndex >= r.maxParticipants)
-            revert RaffleFull(r.nextIndex, r.maxParticipants);
-        if (msg.value != r.ticketPrice)
-            revert InvalidTicketPrice(msg.value, r.ticketPrice);
-        if (commitmentUsed[raffleId][commitment])
-            revert CommitmentAlreadyUsed();
-
-        uint32 insertedIndex = _insert(raffleId, commitment);
-
-        commitments[raffleId][uint256(insertedIndex)] = commitment;
-        commitmentUsed[raffleId][commitment] = true;
-
-        r.root = getLastRoot(raffleId);
-        r.nextIndex = uint256(getNextLeafIndex(raffleId));
-        r.prizePool += msg.value;
-
-        emit TicketPurchased(raffleId, uint256(insertedIndex), commitment);
-    }
-
-    // =========================================================================
-    // RAFFLE DRAWING
-    // =========================================================================
-
-    /**
-     * @notice Select winner using dVRF
-     * @dev Can only be called after raffle ends.
-     */
-    function drawWinner(uint256 raffleId) external {
-        Raffle storage r = raffles[raffleId];
-
-        if (r.status != RaffleStatus.Active) revert RaffleNotActive(r.status);
-        if (block.timestamp < r.endTime)
-            revert RaffleNotEnded(block.timestamp, r.endTime);
-        if (r.nextIndex == 0) revert NoParticipants(r.nextIndex);
-        if (r.randomnessRequested) revert VRFAlreadyRequested();
-
-        r.randomnessRequested = true;
-
-        uint256 seed = uint256(
-            keccak256(
-                abi.encodePacked(
-                    raffleId,
-                    r.root,
-                    msg.sender,
-                    block.timestamp,
-                    block.prevrandao
-                )
-            )
-        );
-        uint256 requestId = supraRouter.generateRequest(
-            "supraCallback(uint256,uint256[])",
-            1,
-            1,
-            seed,
-            msg.sender
-        );
-
-        r.requestId = requestId;
-        requestToRaffle[requestId] = raffleId;
-
-        emit RandomnessRequested(raffleId, requestId);
-    }
-
-    function supraCallback(
-        uint256 requestId,
-        uint256[] calldata randomWords
-    ) external onlySupraRouter {
-        uint256 raffleId = requestToRaffle[requestId];
-        Raffle storage r = raffles[raffleId];
-
-        if (r.status != RaffleStatus.Active) return;
-        if (randomWords.length == 0) return;
-
-        uint256 randomness = randomWords[0];
-        r.winnerIndex = randomness % r.nextIndex;
-        r.status = RaffleStatus.Closed;
-
-        emit WinnerSelected(raffleId, r.winnerIndex);
-    }
-
-    // =========================================================================
-    // PRIZE CLAIM (Via Relayer for max privacy)
-    // =========================================================================
-    function _parsePublicInputs(
-        bytes32[] calldata publicInputs
-    ) internal pure returns (ClaimInputs memory ci) {
-        // Esperas exactamente 6 inputs
-        if (publicInputs.length != 6) revert InvalidProof();
-
-        ci.root = publicInputs[0];
-        ci.nullifierHash = publicInputs[1];
-        ci.recipientBinding = publicInputs[2];
-
-        // bytes32 -> uint256 (directo)
-        ci.raffleId = uint256(publicInputs[3]);
-        ci.winnerIndex = uint256(publicInputs[4]);
-        ci.treeDepth = uint256(publicInputs[5]);
-    }
-
-    function _validateClaim(
-        Raffle storage r,
-        uint256 raffleId,
-        ClaimInputs memory ci,
-        address recipient
-    ) internal view {
-        if (ci.raffleId != raffleId)
-            revert InvalidRaffleId(ci.raffleId, raffleId);
-
-        if (ci.root != r.root) revert InvalidRootMismatch(ci.root, r.root);
-
-        if (ci.winnerIndex != r.winnerIndex)
-            revert NotWinner(ci.winnerIndex, r.winnerIndex);
-
-        if (nullifierUsed[raffleId][ci.nullifierHash])
-            revert NullifierAlreadyUsed();
-        /*
-        bytes32 expected = _expectedRecipientBinding(
-            ci.nullifierHash,
-            recipient
-        );
-        if (ci.recipientBinding != expected)
-            revert InvalidRecipientBinding(ci.recipientBinding, expected);
-        */
-
-        // Si quieres, también puedes validar depth (opcional):
-        // if (ci.treeDepth != r.levels) revert InvalidProof(); // o crea error propio
-    }
-
-    /*
-    function _expectedRecipientBinding(
-        bytes32 nullifierHash,
-        address recipient
-    ) internal view returns (bytes32) {
-        return
-            Field.toBytes32(
-                poseidon2.hash_2(
-                    Field.toField(nullifierHash),
-                    Field.toField(uint160(recipient))
-                )
+        // Zero-hash template: empty[0] = 0; empty[i] = H(empty[i-1], 0)
+        r.emptySubtrees[0] = 0;
+        for (uint256 i = 1; i < levels; i++) {
+            r.emptySubtrees[i] = poseidon2.poseidon(
+                [r.emptySubtrees[i - 1], uint256(0)]
             );
-    }
-    */
-
-    function _payout(
-        uint256 raffleId,
-        Raffle storage r,
-        address recipient,
-        uint256 relayerFee
-    ) internal returns (uint256 paidToRecipient) {
-        uint256 prizeAmount = r.prizePool;
-        r.prizePool = 0;
-
-        if (relayerFee > prizeAmount) revert TransferFailed();
-
-        paidToRecipient = prizeAmount - relayerFee;
-
-        if (relayerFee > 0) {
-            (bool okRelayer, ) = msg.sender.call{value: relayerFee}("");
-            if (!okRelayer) revert TransferFailed();
-            emit RelayerPaid(raffleId, msg.sender, relayerFee);
         }
 
-        (bool okRecipient, ) = recipient.call{value: paidToRecipient}("");
-        if (!okRecipient) revert TransferFailed();
+        emit RaffleCreated(raffleId, ticketPrice, levels, maxSize);
     }
 
     /**
-     * @notice Claim prize with ZK proof
-     * @dev Should be called by relayer for maximum privacy
-     *
-     * The proof verifies:
-     * 1. Prover knows (secret, nullifier) such that commitment = Poseidon2(secret, nullifier)
-     * 2. commitment exists in Merkle tree at winnerIndex position
-     * 3. nullifierHash = Poseidon2(nullifier) - for double-claim prevention
-     * 4. recipientBinding = Poseidon2(nullifierHash, recipient) - binds recipient to proof
-     *
-     * @param raffleId The raffle ID
-     * @param proof The ZK proof bytes
-     * @param publicInputs Array of public inputs:
-     *        [0] root
-     *        [1] nullifierHash
-     *        [2] recipientBinding
-     *        [3] raffleId
-     *        [4] winnerIndex
-     *        [5] treeDepth
-     * @param recipient Address to receive the prize (must match proof)
-     * @param relayerFee Fee to pay the relayer (deducted from prize)
+     * @notice Close ticket sales and set winner index.
+     * @dev Replace randomness with Chainlink VRF (or similar) in production.
+     */
+    function closeAndSetWinner(
+        uint256 raffleId,
+        uint256 randomness
+    ) external onlyOwner {
+        Raffle storage r = raffles[raffleId];
+        require(r.ticketPrice != 0, "RAFFLE_UNKNOWN");
+        require(r.open, "ALREADY_CLOSED");
+        require(r.nextIndex > 0, "NO_TICKETS");
+
+        r.open = false;
+        r.winnerIndex = randomness % r.nextIndex;
+        r.winnerSet = true;
+
+        emit RaffleClosed(raffleId, r.winnerIndex);
+    }
+
+    /* ─────────────────────────── User actions ───────────────────────── */
+
+    /**
+     * @notice Buy a ticket by submitting a commitment (leaf).
+     * @dev Use a relayer if caller privacy is required.
+     */
+    function depositTicket(
+        uint256 raffleId,
+        uint256 commitment
+    ) external payable {
+        Raffle storage r = raffles[raffleId];
+        require(r.ticketPrice != 0, "RAFFLE_UNKNOWN");
+        require(r.open, "CLOSED");
+        require(msg.value == r.ticketPrice, "BAD_PRICE");
+        require(r.nextIndex < r.maxSize, "TREE_FULL");
+
+        uint256 currentIndex = r.nextIndex;
+        uint256 currentHash = commitment;
+
+        for (uint256 i = 0; i < r.levels; i++) {
+            uint256 left;
+            uint256 right;
+
+            if (currentIndex % 2 == 0) {
+                left = currentHash;
+                right = r.emptySubtrees[i];
+                r.filledSubtrees[i] = currentHash;
+            } else {
+                left = r.filledSubtrees[i];
+                right = currentHash;
+            }
+
+            currentHash = poseidon2.poseidon([left, right]);
+            currentIndex >>= 1;
+        }
+
+        r.root = currentHash;
+        commitments[raffleId][r.nextIndex] = commitment;
+        r.nextIndex += 1;
+        r.prizePool += msg.value;
+
+        emit TicketDeposited(raffleId, r.nextIndex - 1, commitment);
+    }
+
+    /**
+     * @notice Claim the prize if your leaf corresponds to the published winner index.
+     * @dev Verifies zkSNARK proof, winner bits, recipient binding, and nullifier uniqueness.
+     * @param recipient Address to receive the prize. Must be bound in the proof as Poseidon(nullifierHash, recipient).
+     * @param _pubSignals Circuit pubSignals in the exact order described in the contract header.
      */
     function claimPrize(
-        uint256 raffleId,
-        bytes calldata proof,
-        bytes32[] calldata publicInputs,
-        address recipient,
-        uint256 relayerFee
-    ) external nonReentrant {
+        uint[2] calldata _pA,
+        uint[2][2] calldata _pB,
+        uint[2] calldata _pC,
+        uint[24] calldata _pubSignals,
+        address recipient
+    ) external {
+        require(verifier.verifyProof(_pA, _pB, _pC, _pubSignals), "BAD_PROOF");
+
+        // Parse pubSignals according to the circuit:
+        // 0: nullifierHash
+        // 1: recipientBinding
+        // 2: root
+        // 3: raffleId
+        // 4..4+levels-1: winnerIndexBits
+        uint256 nullifierHash = _pubSignals[0];
+        uint256 recipientBinding = _pubSignals[1];
+        uint256 root = _pubSignals[2];
+        uint256 raffleId = _pubSignals[3];
+
         Raffle storage r = raffles[raffleId];
+        require(r.ticketPrice != 0, "RAFFLE_UNKNOWN");
 
-        if (r.status != RaffleStatus.Closed) revert RaffleNotClosed(r.status);
+        uint256 L = r.levels;
+        require(_pubSignals.length == (4 + L), "BAD_PUBSIG_LEN");
 
-        require(publicInputs.length == 6, "Invalid public inputs length");
+        // Rebuild winner index from bits (LSB-first).
+        uint256 idx;
+        unchecked {
+            for (uint256 i = 0; i < L; i++) {
+                uint256 bit = _pubSignals[4 + i];
+                require(bit == 0 || bit == 1, "BIT");
+                if (bit == 1) idx |= (uint256(1) << i);
+            }
+        }
 
-        ClaimInputs memory ci = _parsePublicInputs(publicInputs);
+        require(!r.open && r.winnerSet, "NOT_CLOSED");
+        require(root == r.root, "ROOT_MISMATCH");
+        require(idx == r.winnerIndex, "NOT_WINNER");
 
-        _validateClaim(r, raffleId, ci, recipient);
+        // Bind recipient to the proof: Poseidon(nullifierHash, recipient)
+        uint256 rb = poseidon2.poseidon(
+            [nullifierHash, uint256(uint160(recipient))]
+        );
+        require(recipientBinding == rb, "RECIPIENT_NOT_BOUND");
 
-        if (!verifier.verify(proof, publicInputs)) revert InvalidProof();
+        // Prevent double-claim
+        require(!nullifiers[raffleId][nullifierHash], "ALREADY_CLAIMED");
+        nullifiers[raffleId][nullifierHash] = true;
 
-        nullifierUsed[raffleId][ci.nullifierHash] = true;
+        // Effects-before-interactions
+        uint256 amount = r.prizePool;
+        r.prizePool = 0;
 
-        r.status = RaffleStatus.Claimed;
+        (bool sent, ) = recipient.call{value: amount}("");
+        require(sent, "SEND_FAILED");
 
-        uint256 paidToRecipient = _payout(raffleId, r, recipient, relayerFee);
-
-        emit PrizeClaimed(raffleId, paidToRecipient, ci.nullifierHash);
+        emit PrizeClaimed(raffleId, recipient, amount, nullifierHash);
     }
 
-    // =========================================================================
-    // VIEW FUNCTIONS
-    // =========================================================================
+    /* ───────────────────────────── Utilities ─────────────────────────── */
 
-    function getRaffle(uint256 raffleId) external view returns (Raffle memory) {
-        return raffles[raffleId];
-    }
-
-    function getRoot(uint256 raffleId) external view returns (bytes32) {
+    function getRoot(uint256 raffleId) external view returns (uint256) {
         return raffles[raffleId].root;
     }
 
-    function getParticipantCount(
-        uint256 raffleId
-    ) external view returns (uint256) {
-        return raffles[raffleId].nextIndex;
+    function setOwner(address newOwner) external onlyOwner {
+        owner = newOwner;
     }
 
-    function isRaffleActive(uint256 raffleId) external view returns (bool) {
-        Raffle storage r = raffles[raffleId];
-        return r.status == RaffleStatus.Active && block.timestamp < r.endTime;
-    }
-
-    function canDrawWinner(uint256 raffleId) external view returns (bool) {
-        Raffle storage r = raffles[raffleId];
-        return
-            r.status == RaffleStatus.Active &&
-            block.timestamp >= r.endTime &&
-            r.nextIndex > 0;
-    }
-
-    // =========================================================================
-    // EMERGENCY FUNCTIONS
-    // =========================================================================
-
-    /**
-     * @notice Emergency withdraw for stuck funds
-     * @dev Only callable by owner, use with caution
-     */
+    /// @dev Emergency drain. Avoid using in production unless strictly necessary.
     function emergencyWithdraw(address to, uint256 amount) external onlyOwner {
-        (bool success, ) = to.call{value: amount}("");
-        if (!success) revert TransferFailed();
+        (bool ok, ) = to.call{value: amount}("");
+        require(ok, "WITHDRAW_FAIL");
     }
 
     receive() external payable {}
