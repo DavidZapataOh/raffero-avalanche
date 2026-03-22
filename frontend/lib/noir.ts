@@ -1,27 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Noir circuit loading & ZK proof generation — real implementation
 // Uses @noir-lang/noir_js for witness generation and @aztec/bb.js for proving.
+// Lazy-imported to avoid SSR issues with WASM.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Noir } from "@noir-lang/noir_js";
-import { UltraHonkBackend } from "@aztec/bb.js";
-
-// Circuit artifact is served from frontend/public/circuits/raffle.json
-// Copy from circuits/raffle/target/raffle.json during build.
 const CLAIM_CIRCUIT_URL = "/circuits/raffle.json";
 
 export interface ClaimProofInputs {
-  secret: string;           // hex
-  nullifier: string;        // hex
-  siblings: string[];       // hex[32]
-  path_indices: string[];   // hex[32] ("0x00...00" or "0x00...01")
-  recipient: string;        // hex (address as uint256)
-  root: string;             // hex
-  nullifier_hash: string;   // hex
-  recipient_binding: string;// hex
-  raffle_id: string;        // hex
-  winner_index: string;     // hex
-  tree_depth: string;       // hex
+  secret: string;
+  nullifier: string;
+  siblings: string[];
+  path_indices: string[];
+  recipient: string;
+  root: string;
+  nullifier_hash: string;
+  recipient_binding: string;
+  raffle_id: string;
+  winner_index: string;
+  tree_depth: string;
 }
 
 export interface ProofResult {
@@ -41,14 +37,19 @@ async function loadClaimCircuit() {
 }
 
 /**
- * Generate a real ZK claim proof.
+ * Generate a real ZK claim proof in the browser.
  * Uses keccak oracle hash mode for EVM-compatible verification.
+ * Noir.js and bb.js are lazy-imported to avoid SSR/Node.js issues.
  */
 export async function generateClaimProof(
   inputs: ClaimProofInputs,
   onProgress?: (pct: number) => void,
 ): Promise<ProofResult> {
   onProgress?.(5);
+
+  // Lazy import to avoid SSR issues — these only run in the browser
+  const { Noir } = await import("@noir-lang/noir_js");
+  const { UltraHonkBackend } = await import("@aztec/bb.js");
 
   const circuit = await loadClaimCircuit();
   onProgress?.(15);
