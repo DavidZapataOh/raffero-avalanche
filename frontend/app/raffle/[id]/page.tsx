@@ -14,7 +14,7 @@ import { formatAvax, cn } from "@/lib/utils";
 import { useRaffle } from "@/hooks/useRaffle";
 import { publicClient, getPaginatedLogs, getWalletClient, ensureFujiChain } from "@/lib/viem";
 import { RAFFLE_ABI } from "@/lib/contracts";
-import { RAFFLE_CONTRACT } from "@/lib/constants";
+import { RAFFLE_CONTRACT, PROOF_SERVER_URL } from "@/lib/constants";
 import type { RaffleStatus } from "@/lib/types";
 import { getRaffleParticipants, getRaffleMetadata } from "@/lib/supabase";
 import { useWallets } from "@privy-io/react-auth";
@@ -233,7 +233,7 @@ export default function RaffleDetailPage({
 
       // Step 2: Generate shuffle proof (server-side via API route)
       setDrawStep("Generating ZK shuffle proof... (this may take ~30s)");
-      const proofRes = await fetch("/api/shuffle-proof", {
+      const proofRes = await fetch(`${PROOF_SERVER_URL}/api/shuffle-proof`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

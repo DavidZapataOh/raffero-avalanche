@@ -85,3 +85,6 @@ export const DEPLOY_BLOCK = 53055034n;
 
 /** Max block range per RPC getLogs query on Fuji */
 export const MAX_BLOCK_RANGE = 2048n;
+
+/** Proof server URL — your dedicated machine running proof-server/server.mjs */
+export const PROOF_SERVER_URL = process.env.NEXT_PUBLIC_PROOF_SERVER_URL || "http://localhost:3001";
