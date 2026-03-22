@@ -176,12 +176,12 @@ export default function RaffleDetailPage({
     setPrevStatus(fetchedStatus ?? null);
   }, [fetchedStatus]);
 
-  // Poll contract every 3 seconds while raffle is open
+  // Poll contract every 3 seconds while raffle is open (stop during animation)
   useEffect(() => {
-    if (fetchedStatus !== "open") return;
+    if (fetchedStatus !== "open" || isDrawing || drawComplete) return;
     const interval = setInterval(() => refetch(), 3000);
     return () => clearInterval(interval);
-  }, [fetchedStatus, refetch]);
+  }, [fetchedStatus, refetch, isDrawing, drawComplete]);
 
   const status: RaffleStatus = isDrawing
     ? "closed"
@@ -199,7 +199,8 @@ export default function RaffleDetailPage({
     setIsDrawing(false);
     setDrawComplete(true);
     setShowConfetti(true);
-  }, []);
+    refetch(); // Now fetch the final state after animation
+  }, [refetch]);
 
   const [drawStep, setDrawStep] = useState("");
 
@@ -278,17 +279,15 @@ export default function RaffleDetailPage({
       });
       await publicClient.waitForTransactionReceipt({ hash: finalizeTx });
 
-      // Start animation
+      // All on-chain calls done — start animation
+      setClosing(false);
       setDrawStep("");
       setIsDrawing(true);
       setDrawComplete(false);
       setShowConfetti(false);
-
-      refetch();
     } catch (err) {
       console.error("Draw failed:", err);
       setDrawStep("Error: " + (err instanceof Error ? err.message : "Unknown error"));
-    } finally {
       setClosing(false);
     }
   };
@@ -376,7 +375,7 @@ export default function RaffleDetailPage({
       </motion.div>
 
       {/* Drawing animation */}
-      {status === "closed" && isDrawing && participantLabels.length > 0 && (
+      {isDrawing && participantLabels.length > 0 && (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
