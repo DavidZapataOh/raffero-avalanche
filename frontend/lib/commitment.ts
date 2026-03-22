@@ -2,28 +2,21 @@
 // Commitment & nullifier generation
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// All functions in this module mirror the hashing logic inside the Noir circuit
-// and the on-chain Solidity contract so that commitments, nullifier hashes, and
-// entry hashes produced client-side are accepted by the verifier.
+// All functions mirror the hashing logic inside the Noir circuit and the
+// on-chain Solidity contract. Uses real Poseidon2 via @aztec/bb.js.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { poseidon2WithDomain } from "./poseidon";
+import { poseidon3 } from "./poseidon";
 import {
   DOMAIN_COMMIT,
   DOMAIN_NULL,
+  DOMAIN_BIND,
   DOMAIN_ENTRY,
 } from "./constants";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Encode a UTF-8 string as a big-endian `bigint` field element.
- *
- * The string is converted to its raw byte representation and then interpreted
- * as an unsigned big-endian integer.  Strings longer than 31 bytes will
- * overflow the BN254 field — callers should enforce a length limit.
+ * Strings longer than 31 bytes will overflow BN254 — callers should limit.
  */
 export function aliasToField(alias: string): bigint {
   const encoder = new TextEncoder();
@@ -35,59 +28,43 @@ export function aliasToField(alias: string): bigint {
   return value;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Commitment
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Generate the Poseidon commitment stored as a Merkle leaf.
- *
- *   commitment = Poseidon2(DOMAIN_COMMIT, secret, nullifier)
- *
- * @param secret     Hex-encoded random field element (e.g. from `generateRandomField`).
- * @param nullifier  Hex-encoded random field element.
+ * commitment = Poseidon2(DOMAIN_COMMIT, secret, nullifier)
  */
 export async function generateCommitment(
   secret: string,
   nullifier: string,
 ): Promise<bigint> {
-  return poseidon2WithDomain(DOMAIN_COMMIT, BigInt(secret), BigInt(nullifier));
+  return poseidon3(DOMAIN_COMMIT, BigInt(secret), BigInt(nullifier));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Nullifier hash
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Derive the nullifier hash that is revealed on-chain when claiming the prize.
- *
- *   nullifierHash = Poseidon2(DOMAIN_NULL, nullifier, raffleId)
- *
- * @param nullifier Hex-encoded nullifier preimage.
- * @param raffleId  On-chain raffle identifier.
+ * nullifierHash = Poseidon2(DOMAIN_NULL, nullifier, raffleId)
  */
 export async function generateNullifierHash(
   nullifier: string,
   raffleId: bigint,
 ): Promise<bigint> {
-  return poseidon2WithDomain(DOMAIN_NULL, BigInt(nullifier), raffleId);
+  return poseidon3(DOMAIN_NULL, BigInt(nullifier), raffleId);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Entry hash
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * recipientBinding = Poseidon2(DOMAIN_BIND, nullifierHash, recipient)
+ */
+export async function generateRecipientBinding(
+  nullifierHash: bigint,
+  recipient: string,
+): Promise<bigint> {
+  return poseidon3(DOMAIN_BIND, nullifierHash, BigInt(recipient));
+}
 
 /**
- * Compute the entry hash that binds a commitment to a user alias.
- *
- *   entryHash = Poseidon2(DOMAIN_ENTRY, commitment, aliasAsField)
- *
- * @param commitment Poseidon commitment (the Merkle leaf).
- * @param alias      User-chosen display name.
+ * entryHash = Poseidon2(DOMAIN_ENTRY, commitment, leafIndex)
+ * This is what the contract inserts into the Merkle tree.
  */
 export async function generateEntryHash(
   commitment: bigint,
-  alias: string,
+  leafIndex: bigint,
 ): Promise<bigint> {
-  return poseidon2WithDomain(DOMAIN_ENTRY, commitment, aliasToField(alias));
+  return poseidon3(DOMAIN_ENTRY, commitment, leafIndex);
 }

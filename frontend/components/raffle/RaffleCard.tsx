@@ -16,8 +16,8 @@ interface RaffleCardProps {
 
 function getStatus(r: Raffle): Status {
   if (r.open) return "open";
-  if (r.winnerSet) return "completed";
-  return "drawing";
+  if (r.finalized) return "finalized";
+  return "closed";
 }
 
 function ModeIcon({ mode }: { mode: string }) {
@@ -50,9 +50,9 @@ export function RaffleCard({ raffle, className }: RaffleCardProps) {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2">
-            <ModeIcon mode={raffle.mode} />
+            <ModeIcon mode={raffle.metadata.mode} />
             <h3 className="font-heading text-lg font-semibold text-cream leading-tight">
-              {raffle.title}
+              {raffle.metadata.title}
             </h3>
           </div>
           <RaffleStatus status={status} />
@@ -70,15 +70,15 @@ export function RaffleCard({ raffle, className }: RaffleCardProps) {
         <ParticipantCount current={raffle.nextIndex} max={raffle.maxSize} />
 
         {/* Countdown or status */}
-        {isOpen && raffle.endsAt > 0 ? (
+        {isOpen && raffle.metadata.endsAt > 0 ? (
           <div className="pt-2 border-t border-gray-800">
             <p className="text-xs text-gray-500 mb-2">Ends in</p>
-            <Countdown targetDate={raffle.endsAt * 1000} className="scale-75 origin-left" />
+            <Countdown targetDate={raffle.metadata.endsAt * 1000} className="scale-75 origin-left" />
           </div>
         ) : (
           <div className="pt-2 border-t border-gray-800">
             <p className="text-sm text-gray-500">
-              {status === "completed" ? "Winner selected" : status === "drawing" ? "Drawing in progress..." : "Raffle ended"}
+              {status === "finalized" ? "Winner selected" : status === "closed" ? "Drawing in progress..." : "Raffle ended"}
             </p>
           </div>
         )}

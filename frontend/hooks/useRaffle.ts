@@ -14,11 +14,6 @@ interface UseRaffleResult {
   refetch: () => void;
 }
 
-/**
- * Read raffle data from the PrivateRaffle contract.
- *
- * @param raffleId - On-chain raffle ID (bigint).
- */
 export function useRaffle(raffleId: bigint | undefined): UseRaffleResult {
   const [raffle, setRaffle] = useState<Raffle | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,32 +26,48 @@ export function useRaffle(raffleId: bigint | undefined): UseRaffleResult {
     setError(null);
 
     try {
-      const data = await publicClient.readContract({
+      // Read core data
+      const core = await publicClient.readContract({
         address: RAFFLE_CONTRACT,
         abi: RAFFLE_ABI,
-        functionName: "raffles",
+        functionName: "getRaffleCore",
         args: [raffleId],
       });
 
-      // Contract returns tuple: (levels, ticketPrice, maxSize, nextIndex, root, open, winnerSet, winnerIndex, prizePool)
-      const [levels, ticketPrice, maxSize, nextIndex, root, open, winnerSet, winnerIndex, prizePool] = data;
+      // Read extra data
+      const extra = await publicClient.readContract({
+        address: RAFFLE_CONTRACT,
+        abi: RAFFLE_ABI,
+        functionName: "getRaffleExtra",
+        args: [raffleId],
+      });
+
+      const [levels, ticketPrice, maxSize, nextIndex, root, open, winnerSet, winnerIndex, prizePool] = core;
+      const [shuffleSecretHash, vrfRandomness, finalRoot, aliasRoot, finalized] = extra;
 
       const r: Raffle = {
         id: raffleId,
-        mode: "roulette", // Off-chain metadata — default for now
-        visibility: "public",
-        title: `Raffle #${raffleId}`,
-        ticketPrice,
         levels: Number(levels),
+        ticketPrice,
         maxSize: Number(maxSize),
         nextIndex: Number(nextIndex),
-        root,
+        root: root as string,
         open,
         winnerSet,
         winnerIndex: Number(winnerIndex),
         prizePool,
-        createdAt: 0, // Not in contract struct
-        endsAt: 0,
+        shuffleSecretHash: shuffleSecretHash as string,
+        vrfRandomness,
+        finalRoot: finalRoot as string,
+        aliasRoot: aliasRoot as string,
+        finalized,
+        metadata: {
+          mode: "roulette",
+          visibility: "public",
+          title: `Raffle #${raffleId}`,
+          endsAt: 0,
+          createdAt: 0,
+        },
       };
 
       setRaffle(r);
@@ -74,9 +85,9 @@ export function useRaffle(raffleId: bigint | undefined): UseRaffleResult {
   const status: RaffleStatus | null = raffle
     ? raffle.open
       ? "open"
-      : raffle.winnerSet
-      ? "completed"
-      : "drawing"
+      : raffle.finalized
+        ? "finalized"
+        : "closed"
     : null;
 
   return { raffle, status, loading, error, refetch: fetchRaffle };

@@ -9,7 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aztec/bb.js": "^0.87.0",
+    "@noir-lang/noir_js": "^1.0.0-beta.9",
     "@privy-io/react-auth": "^2.12.2",
+    "@supabase/supabase-js": "^2.99.3",
     "@tanstack/react-query": "^5.75.5",
     "framer-motion": "^12.12.1",
     "next": "16.2.1",

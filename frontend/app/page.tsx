@@ -1,12 +1,10 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { motion } from "framer-motion";
 import { Card } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
-import { Countdown } from "@/components/ui/Countdown";
+import { Button } from "@/components/ui/Button";
 
 /* ─── Animation helpers ─── */
 
@@ -24,44 +22,7 @@ const stagger = {
   visible: { transition: { staggerChildren: 0.15 } },
 };
 
-/* ─── Mock data ─── */
-
-// Use fixed future dates to avoid SSR/client hydration mismatch from Date.now()
-function getMockRaffles() {
-  const now = Date.now();
-  return [
-    {
-      id: "1",
-      title: "Avalanche Summit Pass",
-      mode: "Roulette Wheel",
-      modeBadge: "success" as const,
-      participants: 47,
-      maxParticipants: 100,
-      prize: "2.5 AVAX",
-      endsAt: now + 1000 * 60 * 60 * 4 + 1000 * 60 * 23,
-    },
-    {
-      id: "2",
-      title: "Rare NFT Giveaway",
-      mode: "Duck Race",
-      modeBadge: "warning" as const,
-      participants: 128,
-      maxParticipants: 200,
-      prize: "1 Chill Penguin NFT",
-      endsAt: now + 1000 * 60 * 60 * 18 + 1000 * 60 * 5,
-    },
-    {
-      id: "3",
-      title: "Community AVAX Pool",
-      mode: "Roulette Wheel",
-      modeBadge: "success" as const,
-      participants: 312,
-      maxParticipants: 500,
-      prize: "10 AVAX",
-      endsAt: now + 1000 * 60 * 60 * 48,
-    },
-  ];
-}
+/* ─── No mock data — all raffles come from on-chain ─── */
 
 /* ─── Inline SVGs ─── */
 
@@ -187,8 +148,6 @@ function LockIcon() {
 /* ─── Page ─── */
 
 export default function Home() {
-  const [mockRaffles] = useState(getMockRaffles);
-
   return (
     <div className="min-h-screen bg-bg-primary">
       {/* ━━━ HERO ━━━ */}
@@ -373,51 +332,18 @@ export default function Home() {
             viewport={{ once: true, margin: "-80px" }}
             variants={stagger}
           >
-            {mockRaffles.map((raffle, i) => (
-              <motion.div key={raffle.id} variants={fadeUp} custom={i}>
-                <Card hover className="p-6 flex flex-col gap-5 h-full">
-                  {/* Header */}
-                  <div className="flex items-start justify-between gap-3">
-                    <h3 className="font-heading text-lg text-cream leading-snug">
-                      {raffle.title}
-                    </h3>
-                    <Badge variant={raffle.modeBadge}>{raffle.mode}</Badge>
-                  </div>
-
-                  {/* Countdown */}
-                  <div className="flex justify-center">
-                    <Countdown targetDate={raffle.endsAt} className="scale-[0.7] origin-center" />
-                  </div>
-
-                  {/* Stats */}
-                  <div className="flex items-center justify-between text-sm border-t border-gray-800 pt-4">
-                    <div className="flex flex-col">
-                      <span className="text-gray-500 text-xs uppercase tracking-wider">
-                        Players
-                      </span>
-                      <span className="text-cream font-heading">
-                        {raffle.participants}
-                        <span className="text-gray-500">/{raffle.maxParticipants}</span>
-                      </span>
-                    </div>
-                    <div className="flex flex-col items-end">
-                      <span className="text-gray-500 text-xs uppercase tracking-wider">Prize</span>
-                      <span className="text-mint font-heading font-semibold">{raffle.prize}</span>
-                    </div>
-                  </div>
-
-                  {/* Capacity bar */}
-                  <div className="w-full h-1.5 rounded-full bg-gray-800 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-mint/60"
-                      style={{
-                        width: `${(raffle.participants / raffle.maxParticipants) * 100}%`,
-                      }}
-                    />
-                  </div>
-                </Card>
-              </motion.div>
-            ))}
+            <motion.div variants={fadeUp} custom={0} className="col-span-full">
+              <Card hover className="p-8 text-center">
+                <p className="text-gray-300 text-lg mb-4">
+                  Raffles are created on-chain. Browse what&apos;s live!
+                </p>
+                <Link href="/explore">
+                  <Button variant="primary" size="lg" className="glow-pulse">
+                    Browse Raffles
+                  </Button>
+                </Link>
+              </Card>
+            </motion.div>
           </motion.div>
 
           {/* View all link */}

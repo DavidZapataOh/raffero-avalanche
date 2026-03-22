@@ -31,15 +31,11 @@ export const DOMAIN_SECRET = 0x5345435245545f5631n;
 export const MAX_TREE_DEPTH = 32;
 
 /**
- * Zero hashes for the incremental Merkle tree.
- * zeroHashes[0] = 0  (empty leaf)
- * zeroHashes[i] = Poseidon(zeroHashes[i-1], 0)
- *
- * These are computed on-chain during `createRaffle` so they always stay in
- * sync with the Poseidon instance the contract uses.  The frontend only needs
- * the root-level constant (the empty leaf value) when building local trees.
+ * Zero leaf for the incremental Merkle tree.
+ * keccak256("raffero") % BN254_PRIME — must match IncrementalMerkleTree.sol zeros(0).
+ * zeros(i) = Poseidon2(zeros(i-1), zeros(i-1))
  */
-export const ZERO_VALUE = 0n;
+export const ZERO_VALUE = 0x1d028cb78671d570e29d04748982b4d86bf5d94d10b081fc71ab63f5f319a144n;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Avalanche Fuji testnet
@@ -70,12 +66,22 @@ export const FUJI_CHAIN_CONFIG = {
 
 /** PrivateRaffle main contract */
 export const RAFFLE_CONTRACT =
-  "0x0000000000000000000000000000000000000000" as `0x${string}`;
+  "0x55C7b78Cf96866CF36c35da452AF39b6A81c572b" as `0x${string}`;
 
-/** Groth16 / UltraHonk verifier contract */
-export const VERIFIER_CONTRACT =
-  "0x0000000000000000000000000000000000000000" as `0x${string}`;
+/** Claim proof HonkVerifier contract */
+export const CLAIM_VERIFIER_CONTRACT =
+  "0x3445Cd4976fEC2492C8c6E7dCbb3Eae76a83a89D" as `0x${string}`;
 
-/** Poseidon2 hash precompile / library contract */
+/** Shuffle proof HonkVerifier contract */
+export const SHUFFLE_VERIFIER_CONTRACT =
+  "0xD857635E5D39Ad6C08e350E5Df21F2319c685361" as `0x${string}`;
+
+/** Poseidon2 hash contract (poseidon2-evm) */
 export const POSEIDON_CONTRACT =
-  "0x0000000000000000000000000000000000000000" as `0x${string}`;
+  "0x1AcF62aDB348080721ae3Ff4dd68D77428Dc2099" as `0x${string}`;
+
+/** Block number where contracts were deployed */
+export const DEPLOY_BLOCK = 53055034n;
+
+/** Max block range per RPC getLogs query on Fuji */
+export const MAX_BLOCK_RANGE = 2048n;

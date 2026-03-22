@@ -11,8 +11,8 @@ interface RaffleStatusProps {
 
 const statusMap: Record<Status, { variant: BadgeVariant; label: string }> = {
   open: { variant: "success", label: "Open" },
-  drawing: { variant: "warning", label: "Drawing" },
-  completed: { variant: "neutral", label: "Completed" },
+  closed: { variant: "warning", label: "Closed" },
+  finalized: { variant: "neutral", label: "Finalized" },
   claimed: { variant: "neutral", label: "Claimed" },
 };
 
@@ -24,8 +24,8 @@ export function RaffleStatus({ status, className }: RaffleStatusProps) {
         className={cn(
           "inline-block w-1.5 h-1.5 rounded-full mr-1.5",
           status === "open" && "bg-mint",
-          status === "drawing" && "bg-warning animate-pulse",
-          (status === "completed" || status === "claimed") && "bg-gray-500"
+          status === "closed" && "bg-warning animate-pulse",
+          (status === "finalized" || status === "claimed") && "bg-gray-500"
         )}
       />
       {label}

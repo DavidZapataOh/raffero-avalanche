@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getWalletClient } from "@/lib/viem";
+import { getWalletClient, ensureFujiChain } from "@/lib/viem";
 import { RAFFLE_ABI } from "@/lib/contracts";
 import { RAFFLE_CONTRACT } from "@/lib/constants";
 
@@ -35,6 +35,7 @@ export function useDepositTicket(): UseDepositTicketResult {
     setError(null);
 
     try {
+      await ensureFujiChain(provider);
       const walletClient = getWalletClient(provider);
       const [account] = await walletClient.getAddresses();
 

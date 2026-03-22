@@ -9,7 +9,7 @@ export function Footer() {
         </p>
         <div className="flex items-center gap-4">
           <a
-            href="https://github.com"
+            href="https://github.com/DavidZapataOh/raffero-avalanche"
             target="_blank"
             rel="noopener noreferrer"
             className="text-gray-500 hover:text-cream transition-colors"

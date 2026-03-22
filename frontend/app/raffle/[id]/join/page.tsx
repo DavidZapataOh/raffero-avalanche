@@ -8,6 +8,14 @@ import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
 import { formatAvax } from "@/lib/utils";
 import { generateRandomField } from "@/lib/utils";
+import { generateCommitment } from "@/lib/commitment";
+import { useRaffle } from "@/hooks/useRaffle";
+import { useDepositTicket } from "@/hooks/useDepositTicket";
+import { useWallets } from "@privy-io/react-auth";
+import { publicClient } from "@/lib/viem";
+import { RAFFLE_ABI } from "@/lib/contracts";
+import { parseEventLogs } from "viem";
+import { saveParticipantAlias } from "@/lib/supabase";
 
 type JoinStep = "alias" | "confirm" | "success";
 
@@ -17,38 +25,72 @@ export default function JoinRafflePage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const raffleId = BigInt(id);
+  const { raffle, loading: raffleLoading } = useRaffle(raffleId);
+  const { wallets } = useWallets();
+  const { depositTicket } = useDepositTicket();
   const [step, setStep] = useState<JoinStep>("alias");
   const [alias, setAlias] = useState("");
+  const [displayAlias, setDisplayAlias] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  // Mock ticket price — in production, fetched from contract
-  const ticketPrice = 500000000000000000n;
+  const ticketPrice = raffle?.ticketPrice ?? 0n;
 
   const handleConfirm = async () => {
     setSubmitting(true);
     setError("");
     try {
+      const wallet = wallets[0];
+      if (!wallet) throw new Error("No wallet connected");
+      const provider = await wallet.getEthereumProvider();
+
       // Generate cryptographic secrets
       const secret = generateRandomField();
       const nullifier = generateRandomField();
 
-      // TODO: Compute commitment = Poseidon2(DOMAIN_COMMIT, secret, nullifier)
-      // TODO: Compute entry_hash = Poseidon2(DOMAIN_ENTRY, commitment, alias_as_field)
-      // TODO: Call depositTicket(raffleId, commitment) with msg.value = ticketPrice
-      // TODO: Save { secret, nullifier, alias, raffleId, leafIndex } to localStorage
+      // Compute real Poseidon2 commitment
+      const commitment = await generateCommitment(secret, nullifier);
 
-      // Simulate transaction
-      await new Promise((r) => setTimeout(r, 2000));
+      // Call depositTicket on-chain
+      const hash = await depositTicket({
+        raffleId,
+        commitment,
+        ticketPrice,
+        provider,
+      });
 
-      // For now, save a placeholder to localStorage
+      // Wait for receipt and parse TicketDeposited event to get leafIndex
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const logs = parseEventLogs({
+        abi: RAFFLE_ABI,
+        logs: receipt.logs,
+        eventName: "TicketDeposited",
+      });
+
+      const leafIndex = logs.length > 0 ? Number(logs[0].args.index) : -1;
+
+      // Add random 4-digit discriminator to alias
+      const discriminator = Math.floor(1000 + Math.random() * 9000).toString();
+      const fullAlias = `${alias}#${discriminator}`;
+      setDisplayAlias(fullAlias);
+
+      // Save alias to Supabase (public, visible to everyone)
+      await saveParticipantAlias({
+        raffleId: id,
+        leafIndex,
+        alias: fullAlias,
+        joinedAt: Date.now(),
+      });
+
+      // Save secrets to localStorage (private, never leaves the browser)
       const ticket = {
         raffleId: id,
         secret,
         nullifier,
-        alias,
-        leafIndex: -1, // Will be set from tx receipt
-        commitment: "0x0", // Will be computed
+        alias: fullAlias,
+        leafIndex,
+        commitment: "0x" + commitment.toString(16).padStart(64, "0"),
         timestamp: Date.now(),
       };
 
@@ -63,6 +105,14 @@ export default function JoinRafflePage({
       setSubmitting(false);
     }
   };
+
+  if (raffleLoading) {
+    return (
+      <div className="mx-auto max-w-lg px-4 py-12 sm:px-6">
+        <p className="text-gray-400">Loading raffle...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-lg px-4 py-12 sm:px-6">
@@ -141,7 +191,6 @@ export default function JoinRafflePage({
               </div>
             </div>
 
-            {/* Privacy notice */}
             <div className="p-4 rounded-xl bg-mint/5 border border-mint/20 mb-6">
               <div className="flex items-start gap-3">
                 <svg
@@ -200,7 +249,7 @@ export default function JoinRafflePage({
               You&apos;re In!
             </h2>
             <p className="text-gray-300 mb-2">
-              Welcome, <span className="text-mint font-semibold">{alias}</span>!
+              Welcome, <span className="text-mint font-semibold">{displayAlias || alias}</span>!
             </p>
             <p className="text-sm text-gray-500 mb-8">
               Your ticket has been purchased. Good luck!

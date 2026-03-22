@@ -33,7 +33,7 @@ function RouletteWheel({
   const total = Math.max(participants.length, 2);
   const sliceAngle = 360 / total;
 
-  const SPIN_DURATION_MS = 4500;
+  const SPIN_DURATION_MS = 8000;
 
   useEffect(() => {
     if (!spinning || animating) return;
@@ -41,8 +41,8 @@ function RouletteWheel({
     setSettled(false);
     setAnimating(true);
 
-    // 5 full turns + offset to land winner slice under the pointer at top
-    const fullTurns = 5;
+    // 8 full turns + offset to land winner slice under the pointer at top
+    const fullTurns = 8;
     const targetSliceCenter = winnerIndex * sliceAngle + sliceAngle / 2;
     const finalAngle = fullTurns * 360 + (360 - targetSliceCenter);
 

@@ -1,41 +1,35 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Client-side Poseidon2 hash — placeholder implementation
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// TODO: Replace this placeholder with the actual Poseidon2 implementation that
-// matches the Noir circuit and on-chain Poseidon2 precompile. The keccak256
-// stand-in used here produces different outputs and will NOT generate valid
-// proofs — it only exists so the rest of the frontend can compile and run.
+// Client-side Poseidon2 hash — real implementation using @aztec/bb.js
+// Matches the on-chain Poseidon2 (poseidon2-evm) and Noir circuit exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { keccak256, encodePacked } from "viem";
+import { BarretenbergSync, Fr } from "@aztec/bb.js";
 
-/**
- * Poseidon2 hash of two field elements.
- *
- * Placeholder: returns `keccak256(abi.encodePacked(a, b))` truncated to 254
- * bits so it fits inside the BN254 scalar field.
- */
-export async function poseidon2(a: bigint, b: bigint): Promise<bigint> {
-  const hash = keccak256(
-    encodePacked(["uint256", "uint256"], [a, b]),
-  );
-  // Mask to 254 bits to stay within the BN254 scalar field
-  return BigInt(hash) & ((1n << 254n) - 1n);
+let api: BarretenbergSync | null = null;
+
+async function getApi(): Promise<BarretenbergSync> {
+  if (!api) {
+    api = await BarretenbergSync.initSingleton();
+  }
+  return api;
 }
 
 /**
- * Domain-separated Poseidon2: hash(domain, a) then hash(result, b).
- *
- * This mirrors the circuit's two-step domain-tagged hashing scheme:
- *   intermediate = Poseidon2(domain, a)
- *   result       = Poseidon2(intermediate, b)
+ * Poseidon2 hash of two field elements.
+ * Matches: Poseidon2::hash([a, b], 2) in Noir, HASHER.hash_2(a, b) on-chain.
  */
-export async function poseidon2WithDomain(
-  domain: bigint,
-  a: bigint,
-  b: bigint,
-): Promise<bigint> {
-  const intermediate = await poseidon2(domain, a);
-  return poseidon2(intermediate, b);
+export async function poseidon2(a: bigint, b: bigint): Promise<bigint> {
+  const bb = await getApi();
+  const result = bb.poseidon2Hash([new Fr(a), new Fr(b)]);
+  return BigInt(result.toString());
+}
+
+/**
+ * Poseidon2 hash of three field elements.
+ * Matches: Poseidon2::hash([a, b, c], 3) in Noir, HASHER.hash_3(a, b, c) on-chain.
+ */
+export async function poseidon3(a: bigint, b: bigint, c: bigint): Promise<bigint> {
+  const bb = await getApi();
+  const result = bb.poseidon2Hash([new Fr(a), new Fr(b), new Fr(c)]);
+  return BigInt(result.toString());
 }

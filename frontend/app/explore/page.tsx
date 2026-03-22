@@ -1,74 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { cn } from "@/lib/utils";
-import type { RaffleMode, RaffleStatus, Raffle } from "@/lib/types";
-import { RaffleCard } from "@/components/raffle/RaffleCard";
+import Link from "next/link";
+import { cn, formatAvax } from "@/lib/utils";
+import { publicClient, getPaginatedLogs } from "@/lib/viem";
+import { RAFFLE_ABI } from "@/lib/contracts";
+import { RAFFLE_CONTRACT } from "@/lib/constants";
+import { Card } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { getAllRaffleMetadata } from "@/lib/supabase";
+import type { RaffleStatus } from "@/lib/types";
 
-type ModeFilter = "all" | RaffleMode;
 type StatusFilter = "all" | RaffleStatus;
 
-// Mock data built inside component to avoid SSR/client Date.now() mismatch
-function getMockRaffles(): Raffle[] {
-  const now = Math.floor(Date.now() / 1000);
-  return [
-    {
-      id: 1n, mode: "roulette", visibility: "public", title: "Spin to Win #1",
-      ticketPrice: 500000000000000000n, levels: 4, maxSize: 16, nextIndex: 11,
-      root: 0n, open: true, winnerSet: false, winnerIndex: 0,
-      prizePool: 5500000000000000000n, createdAt: now - 86400, endsAt: now + 86400 * 2,
-    },
-    {
-      id: 2n, mode: "duckrace", visibility: "public", title: "Duck Derby #3",
-      ticketPrice: 250000000000000000n, levels: 3, maxSize: 8, nextIndex: 8,
-      root: 0n, open: false, winnerSet: true, winnerIndex: 3,
-      prizePool: 2000000000000000000n, createdAt: now - 172800, endsAt: now - 3600,
-    },
-    {
-      id: 3n, mode: "roulette", visibility: "public", title: "High Roller Roulette",
-      ticketPrice: 1000000000000000000n, levels: 5, maxSize: 32, nextIndex: 7,
-      root: 0n, open: true, winnerSet: false, winnerIndex: 0,
-      prizePool: 7000000000000000000n, createdAt: now - 43200, endsAt: now + 86400 * 5,
-    },
-    {
-      id: 4n, mode: "duckrace", visibility: "public", title: "Quack Attack",
-      ticketPrice: 100000000000000000n, levels: 4, maxSize: 16, nextIndex: 14,
-      root: 0n, open: true, winnerSet: false, winnerIndex: 0,
-      prizePool: 1400000000000000000n, createdAt: now - 7200, endsAt: now + 3600 * 8,
-    },
-    {
-      id: 5n, mode: "roulette", visibility: "public", title: "Lucky Spin",
-      ticketPrice: 200000000000000000n, levels: 3, maxSize: 8, nextIndex: 8,
-      root: 0n, open: false, winnerSet: true, winnerIndex: 5,
-      prizePool: 1600000000000000000n, createdAt: now - 259200, endsAt: now - 86400,
-    },
-    {
-      id: 6n, mode: "duckrace", visibility: "public", title: "Pond Party",
-      ticketPrice: 500000000000000000n, levels: 4, maxSize: 16, nextIndex: 3,
-      root: 0n, open: true, winnerSet: false, winnerIndex: 0,
-      prizePool: 1500000000000000000n, createdAt: now - 1800, endsAt: now + 86400 * 7,
-    },
-  ];
+interface RaffleSummary {
+  id: bigint;
+  ticketPrice: bigint;
+  levels: number;
+  maxSize: number;
+  nextIndex: number;
+  open: boolean;
+  winnerSet: boolean;
+  finalized: boolean;
+  prizePool: bigint;
+  title: string;
+  status: RaffleStatus;
 }
-
-function getRaffleStatus(r: Raffle): RaffleStatus {
-  if (r.open) return "open";
-  if (r.winnerSet) return "completed";
-  return "drawing";
-}
-
-const modeFilters: { value: ModeFilter; label: string }[] = [
-  { value: "all", label: "All Modes" },
-  { value: "roulette", label: "Roulette" },
-  { value: "duckrace", label: "Duck Race" },
-];
 
 const statusFilters: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "open", label: "Open" },
-  { value: "drawing", label: "Drawing" },
-  { value: "completed", label: "Completed" },
+  { value: "finalized", label: "Finalized" },
 ];
 
 function FilterPill({
@@ -96,20 +59,91 @@ function FilterPill({
 }
 
 export default function ExplorePage() {
-  const [modeFilter, setModeFilter] = useState<ModeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [raffles] = useState(getMockRaffles);
+  const [raffles, setRaffles] = useState<RaffleSummary[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = raffles.filter((r) => {
-    if (modeFilter !== "all" && r.mode !== modeFilter) return false;
-    const status = getRaffleStatus(r);
-    if (statusFilter !== "all" && status !== statusFilter) return false;
-    return true;
-  });
+  useEffect(() => {
+    async function fetchRaffles() {
+      try {
+        // Load metadata from Supabase
+        const allMeta = await getAllRaffleMetadata();
+        const metaMap = new Map(allMeta.map((m) => [m.raffle_id, m]));
+
+        // Read RaffleCreated events to discover all raffles
+        const logs = await getPaginatedLogs({
+          address: RAFFLE_CONTRACT,
+          event: {
+            type: "event",
+            name: "RaffleCreated",
+            inputs: [
+              { name: "raffleId", type: "uint256", indexed: true },
+              { name: "ticketPrice", type: "uint256", indexed: false },
+              { name: "levels", type: "uint256", indexed: false },
+              { name: "maxSize", type: "uint256", indexed: false },
+            ],
+          },
+        });
+
+        // For each raffle, fetch current state
+        const results: RaffleSummary[] = [];
+        for (const log of logs) {
+          const raffleId = log.args.raffleId!;
+          try {
+            const core = await publicClient.readContract({
+              address: RAFFLE_CONTRACT,
+              abi: RAFFLE_ABI,
+              functionName: "getRaffleCore",
+              args: [raffleId],
+            });
+            const extra = await publicClient.readContract({
+              address: RAFFLE_CONTRACT,
+              abi: RAFFLE_ABI,
+              functionName: "getRaffleExtra",
+              args: [raffleId],
+            });
+
+            const [levels, ticketPrice, maxSize, nextIndex, , open, winnerSet, , prizePool] = core;
+            const [, , , , finalized] = extra;
+
+            const meta = metaMap.get(raffleId.toString());
+            let title = meta?.title || `Raffle #${raffleId}`;
+
+            const status: RaffleStatus = open ? "open" : finalized ? "finalized" : "closed";
+
+            results.push({
+              id: raffleId,
+              ticketPrice,
+              levels: Number(levels),
+              maxSize: Number(maxSize),
+              nextIndex: Number(nextIndex),
+              open,
+              winnerSet,
+              finalized,
+              prizePool,
+              title,
+              status,
+            });
+          } catch { /* skip unreadable raffles */ }
+        }
+
+        setRaffles(results);
+      } catch (err) {
+        console.error("Failed to fetch raffles:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchRaffles();
+  }, []);
+
+  const filtered = raffles.filter(
+    (r) => statusFilter === "all" || r.status === statusFilter
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6">
-      {/* Page header */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -132,17 +166,6 @@ export default function ExplorePage() {
         className="flex flex-wrap gap-6 mb-8"
       >
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500 mr-1">Mode:</span>
-          {modeFilters.map((f) => (
-            <FilterPill
-              key={f.value}
-              label={f.label}
-              active={modeFilter === f.value}
-              onClick={() => setModeFilter(f.value)}
-            />
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500 mr-1">Status:</span>
           {statusFilters.map((f) => (
             <FilterPill
@@ -155,25 +178,68 @@ export default function ExplorePage() {
         </div>
       </motion.div>
 
-      {/* Raffle grid */}
-      {filtered.length === 0 ? (
+      {/* Raffles grid */}
+      {loading ? (
+        <p className="text-gray-500 text-center py-20">Loading raffles...</p>
+      ) : filtered.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="text-center py-20"
         >
-          <p className="text-gray-500 text-lg">No raffles match your filters.</p>
+          <p className="text-gray-500 text-lg">
+            {raffles.length === 0
+              ? "No raffles created yet. Be the first!"
+              : "No raffles match your filters."}
+          </p>
+          {raffles.length === 0 && (
+            <Link
+              href="/raffle/create"
+              className="inline-block mt-4 text-mint hover:text-mint/80 font-medium"
+            >
+              Create a Raffle &rarr;
+            </Link>
+          )}
         </motion.div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filtered.map((raffle, i) => (
+          {filtered.map((r, i) => (
             <motion.div
-              key={raffle.id.toString()}
+              key={r.id.toString()}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: 0.05 * i }}
+              transition={{ delay: i * 0.05 }}
             >
-              <RaffleCard raffle={raffle} />
+              <Link href={`/raffle/${r.id}`}>
+                <Card className="p-5 hover:border-mint/30 transition-colors cursor-pointer">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-heading text-lg font-bold text-cream truncate">
+                      {r.title}
+                    </h3>
+                    <Badge variant={r.open ? "success" : r.finalized ? "neutral" : "warning"}>
+                      {r.open ? "Open" : r.finalized ? "Finalized" : "Closed"}
+                    </Badge>
+                  </div>
+                  <div className="flex justify-between text-sm mb-3">
+                    <span className="text-gray-500">Prize Pool</span>
+                    <span className="text-mint font-semibold">{formatAvax(r.prizePool)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm mb-3">
+                    <span className="text-gray-500">Ticket</span>
+                    <span className="text-cream">{formatAvax(r.ticketPrice)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Participants</span>
+                    <span className="text-cream">{r.nextIndex}/{r.maxSize}</span>
+                  </div>
+                  <div className="mt-3 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-mint transition-all"
+                      style={{ width: `${Math.round((r.nextIndex / r.maxSize) * 100)}%` }}
+                    />
+                  </div>
+                </Card>
+              </Link>
             </motion.div>
           ))}
         </div>

@@ -67,11 +67,14 @@ export function cn(...classes: (string | false | null | undefined)[]): string {
  *
  * Uses `crypto.getRandomValues` (available in all modern browsers and Node 19+).
  */
+const BN254_PRIME = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
+
 export function generateRandomField(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const hex = Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return `0x${hex}`;
+  const val = BigInt(`0x${hex}`) % BN254_PRIME;
+  return "0x" + val.toString(16).padStart(64, "0");
 }

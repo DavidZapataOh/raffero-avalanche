@@ -1,11 +1,7 @@
-import {
-  RAFFLE_CONTRACT,
-  VERIFIER_CONTRACT,
-  POSEIDON_CONTRACT,
-} from "./constants";
+import { RAFFLE_CONTRACT } from "./constants";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PrivateRaffle ABI (matches src/Raffle.sol)
+// PrivateRaffle ABI — matches current src/Raffle.sol (inherits IncrementalMerkleTree)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const RAFFLE_ABI = [
@@ -14,19 +10,51 @@ export const RAFFLE_ABI = [
     type: "function",
     name: "createRaffle",
     inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
-      { name: "ticketPrice", type: "uint256", internalType: "uint256" },
-      { name: "levels", type: "uint256", internalType: "uint256" },
+      { name: "raffleId", type: "uint256" },
+      { name: "ticketPrice", type: "uint256" },
+      { name: "levels", type: "uint256" },
     ],
     outputs: [],
     stateMutability: "nonpayable",
   },
   {
     type: "function",
-    name: "closeAndSetWinner",
+    name: "closeRaffle",
     inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
-      { name: "randomness", type: "uint256", internalType: "uint256" },
+      { name: "raffleId", type: "uint256" },
+      { name: "randomness", type: "uint256" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "commitShuffleSecret",
+    inputs: [
+      { name: "raffleId", type: "uint256" },
+      { name: "secretHash", type: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "finalizeRaffle",
+    inputs: [
+      { name: "raffleId", type: "uint256" },
+      { name: "shuffleProof", type: "bytes" },
+      { name: "shufflePublicInputs", type: "bytes32[]" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "closeAndFinalizeSimple",
+    inputs: [
+      { name: "raffleId", type: "uint256" },
+      { name: "randomness", type: "uint256" },
+      { name: "commitmentRoot", type: "bytes32" },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -37,8 +65,8 @@ export const RAFFLE_ABI = [
     type: "function",
     name: "depositTicket",
     inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
-      { name: "commitment", type: "uint256", internalType: "uint256" },
+      { name: "raffleId", type: "uint256" },
+      { name: "commitment", type: "uint256" },
     ],
     outputs: [],
     stateMutability: "payable",
@@ -47,11 +75,9 @@ export const RAFFLE_ABI = [
     type: "function",
     name: "claimPrize",
     inputs: [
-      { name: "_pA", type: "uint256[2]", internalType: "uint256[2]" },
-      { name: "_pB", type: "uint256[2][2]", internalType: "uint256[2][2]" },
-      { name: "_pC", type: "uint256[2]", internalType: "uint256[2]" },
-      { name: "_pubSignals", type: "uint256[24]", internalType: "uint256[24]" },
-      { name: "recipient", type: "address", internalType: "address" },
+      { name: "claimProof", type: "bytes" },
+      { name: "claimPublicInputs", type: "bytes32[]" },
+      { name: "recipient", type: "address" },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -61,56 +87,65 @@ export const RAFFLE_ABI = [
   {
     type: "function",
     name: "getRoot",
-    inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
+    inputs: [{ name: "raffleId", type: "uint256" }],
+    outputs: [{ name: "", type: "bytes32" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getRaffleCore",
+    inputs: [{ name: "raffleId", type: "uint256" }],
+    outputs: [
+      { name: "levels", type: "uint256" },
+      { name: "ticketPrice", type: "uint256" },
+      { name: "maxSize", type: "uint256" },
+      { name: "nextIndex", type: "uint256" },
+      { name: "root", type: "bytes32" },
+      { name: "open", type: "bool" },
+      { name: "winnerSet", type: "bool" },
+      { name: "winnerIndex", type: "uint256" },
+      { name: "prizePool", type: "uint256" },
     ],
-    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getRaffleExtra",
+    inputs: [{ name: "raffleId", type: "uint256" }],
+    outputs: [
+      { name: "shuffleSecretHash", type: "bytes32" },
+      { name: "vrfRandomness", type: "uint256" },
+      { name: "finalRoot", type: "bytes32" },
+      { name: "aliasRoot", type: "bytes32" },
+      { name: "finalized", type: "bool" },
+    ],
     stateMutability: "view",
   },
   {
     type: "function",
     name: "owner",
     inputs: [],
-    outputs: [{ name: "", type: "address", internalType: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "raffles",
-    inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
-    ],
-    outputs: [
-      { name: "levels", type: "uint256", internalType: "uint256" },
-      { name: "ticketPrice", type: "uint256", internalType: "uint256" },
-      { name: "maxSize", type: "uint256", internalType: "uint256" },
-      { name: "nextIndex", type: "uint256", internalType: "uint256" },
-      { name: "root", type: "uint256", internalType: "uint256" },
-      { name: "open", type: "bool", internalType: "bool" },
-      { name: "winnerSet", type: "bool", internalType: "bool" },
-      { name: "winnerIndex", type: "uint256", internalType: "uint256" },
-      { name: "prizePool", type: "uint256", internalType: "uint256" },
-    ],
+    outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
   },
   {
     type: "function",
     name: "commitments",
     inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
-      { name: "index", type: "uint256", internalType: "uint256" },
+      { name: "raffleId", type: "uint256" },
+      { name: "index", type: "uint256" },
     ],
-    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
   },
   {
     type: "function",
     name: "nullifiers",
     inputs: [
-      { name: "raffleId", type: "uint256", internalType: "uint256" },
-      { name: "nullifierHash", type: "uint256", internalType: "uint256" },
+      { name: "raffleId", type: "uint256" },
+      { name: "nullifierHash", type: "uint256" },
     ],
-    outputs: [{ name: "", type: "bool", internalType: "bool" }],
+    outputs: [{ name: "", type: "bool" }],
     stateMutability: "view",
   },
 
@@ -119,105 +154,62 @@ export const RAFFLE_ABI = [
     type: "event",
     name: "RaffleCreated",
     inputs: [
-      { name: "raffleId", type: "uint256", indexed: true, internalType: "uint256" },
-      { name: "ticketPrice", type: "uint256", indexed: false, internalType: "uint256" },
-      { name: "levels", type: "uint256", indexed: false, internalType: "uint256" },
-      { name: "maxSize", type: "uint256", indexed: false, internalType: "uint256" },
+      { name: "raffleId", type: "uint256", indexed: true },
+      { name: "ticketPrice", type: "uint256", indexed: false },
+      { name: "levels", type: "uint256", indexed: false },
+      { name: "maxSize", type: "uint256", indexed: false },
     ],
-    anonymous: false,
   },
   {
     type: "event",
     name: "TicketDeposited",
     inputs: [
-      { name: "raffleId", type: "uint256", indexed: true, internalType: "uint256" },
-      { name: "index", type: "uint256", indexed: false, internalType: "uint256" },
-      { name: "commitment", type: "uint256", indexed: false, internalType: "uint256" },
+      { name: "raffleId", type: "uint256", indexed: true },
+      { name: "index", type: "uint256", indexed: false },
+      { name: "commitment", type: "uint256", indexed: false },
     ],
-    anonymous: false,
   },
   {
     type: "event",
     name: "RaffleClosed",
     inputs: [
-      { name: "raffleId", type: "uint256", indexed: true, internalType: "uint256" },
-      { name: "winnerIndex", type: "uint256", indexed: false, internalType: "uint256" },
+      { name: "raffleId", type: "uint256", indexed: true },
+      { name: "winnerIndex", type: "uint256", indexed: false },
     ],
-    anonymous: false,
   },
   {
     type: "event",
     name: "PrizeClaimed",
     inputs: [
-      { name: "raffleId", type: "uint256", indexed: true, internalType: "uint256" },
-      { name: "to", type: "address", indexed: true, internalType: "address" },
-      { name: "amount", type: "uint256", indexed: false, internalType: "uint256" },
-      { name: "nullifierHash", type: "uint256", indexed: false, internalType: "uint256" },
+      { name: "raffleId", type: "uint256", indexed: true },
+      { name: "to", type: "address", indexed: true },
+      { name: "amount", type: "uint256", indexed: false },
+      { name: "nullifierHash", type: "uint256", indexed: false },
     ],
-    anonymous: false,
   },
-] as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Verifier ABI (ICircomVerifier — single function)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const VERIFIER_ABI = [
   {
-    type: "function",
-    name: "verifyProof",
+    type: "event",
+    name: "ShuffleSecretCommitted",
     inputs: [
-      { name: "_pA", type: "uint256[2]", internalType: "uint256[2]" },
-      { name: "_pB", type: "uint256[2][2]", internalType: "uint256[2][2]" },
-      { name: "_pC", type: "uint256[2]", internalType: "uint256[2]" },
-      { name: "_pubSignals", type: "uint256[24]", internalType: "uint256[24]" },
+      { name: "raffleId", type: "uint256", indexed: true },
+      { name: "secretHash", type: "bytes32", indexed: false },
     ],
-    outputs: [{ name: "", type: "bool", internalType: "bool" }],
-    stateMutability: "view",
   },
-] as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Poseidon2 ABI (IPoseidon2 — single function)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const POSEIDON_ABI = [
   {
-    type: "function",
-    name: "poseidon",
+    type: "event",
+    name: "RaffleFinalized",
     inputs: [
-      { name: "inputs", type: "uint256[2]", internalType: "uint256[2]" },
+      { name: "raffleId", type: "uint256", indexed: true },
+      { name: "finalRoot", type: "bytes32", indexed: false },
+      { name: "aliasRoot", type: "bytes32", indexed: false },
     ],
-    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
-    stateMutability: "view",
   },
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: get { address, abi } for a named contract
+// Helper: contract config for viem calls
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ContractName = "raffle" | "verifier" | "poseidon";
-
-const CONTRACT_MAP = {
-  raffle: { address: RAFFLE_CONTRACT, abi: RAFFLE_ABI },
-  verifier: { address: VERIFIER_CONTRACT, abi: VERIFIER_ABI },
-  poseidon: { address: POSEIDON_CONTRACT, abi: POSEIDON_ABI },
-} as const;
-
-/**
- * Returns the `{ address, abi }` pair for the requested contract, ready to be
- * spread into a viem `readContract` / `writeContract` call.
- *
- * @example
- * ```ts
- * const root = await publicClient.readContract({
- *   ...getContractConfig("raffle"),
- *   functionName: "getRoot",
- *   args: [raffleId],
- * });
- * ```
- */
-export function getContractConfig(name: ContractName) {
-  return CONTRACT_MAP[name];
+export function getRaffleConfig() {
+  return { address: RAFFLE_CONTRACT, abi: RAFFLE_ABI } as const;
 }

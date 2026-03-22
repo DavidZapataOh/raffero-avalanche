@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -8,6 +9,11 @@ import { Card } from "@/components/ui/Card";
 import { ModeSelector } from "./ModeSelector";
 import { VisibilitySelector } from "./VisibilitySelector";
 import { cn } from "@/lib/utils";
+import { useCreateRaffle } from "@/hooks/useCreateRaffle";
+import { useWallets } from "@privy-io/react-auth";
+import { publicClient } from "@/lib/viem";
+import { parseEther, keccak256, encodePacked } from "viem";
+import { saveRaffleMetadata } from "@/lib/supabase";
 import type { RaffleMode, RaffleVisibility } from "@/lib/types";
 
 interface FormData {
@@ -16,7 +22,7 @@ interface FormData {
   title: string;
   ticketPrice: string;
   maxParticipants: string;
-  duration: string; // hours
+  endsAt: string; // datetime-local string (YYYY-MM-DDTHH:MM)
   pin: string;
 }
 
@@ -82,16 +88,19 @@ const slideVariants = {
 };
 
 export function CreateRaffleForm() {
+  const router = useRouter();
+  const { wallets } = useWallets();
+  const { createRaffle, loading: creating } = useCreateRaffle();
   const [step, setStep] = useState(0);
   const [direction, setDirection] = useState(1);
-  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
   const [formData, setFormData] = useState<FormData>({
     mode: "roulette",
     visibility: "public",
     title: "",
     ticketPrice: "0.5",
     maxParticipants: "16",
-    duration: "24",
+    endsAt: "",
     pin: "",
   });
 
@@ -103,6 +112,7 @@ export function CreateRaffleForm() {
       if (!formData.title.trim()) return false;
       if (!formData.ticketPrice || parseFloat(formData.ticketPrice) <= 0) return false;
       if (!formData.maxParticipants || parseInt(formData.maxParticipants) < 2) return false;
+      if (!formData.endsAt || new Date(formData.endsAt).getTime() <= Date.now()) return false;
       if (formData.visibility === "private" && !formData.pin.trim()) return false;
     }
     return true;
@@ -122,16 +132,56 @@ export function CreateRaffleForm() {
     }
   };
 
-  const handleCreate = async () => {
-    setSubmitting(true);
-    // TODO: Call createRaffle contract function
-    // For now, simulate a delay
-    await new Promise((r) => setTimeout(r, 2000));
-    setSubmitting(false);
-    // TODO: Navigate to raffle detail page
-  };
-
   const levels = Math.ceil(Math.log2(parseInt(formData.maxParticipants) || 2));
+
+  const handleCreate = async () => {
+    setError("");
+
+    try {
+      const wallet = wallets[0];
+      if (!wallet) throw new Error("Connect your wallet first");
+      const provider = await wallet.getEthereumProvider();
+
+      // Generate deterministic raffleId from creator + timestamp + title
+      const [account] = await (await import("@/lib/viem")).getWalletClient(provider).getAddresses();
+      const raffleId = BigInt(
+        keccak256(
+          encodePacked(
+            ["address", "uint256", "string"],
+            [account, BigInt(Math.floor(Date.now() / 1000)), formData.title]
+          )
+        )
+      ) % (2n ** 128n); // Keep it manageable
+
+      const ticketPrice = parseEther(formData.ticketPrice);
+
+      const hash = await createRaffle({
+        raffleId,
+        ticketPrice,
+        levels,
+        provider,
+      });
+
+      // Wait for confirmation
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      // Save metadata to Supabase
+      await saveRaffleMetadata({
+        raffleId: raffleId.toString(),
+        title: formData.title,
+        mode: formData.mode,
+        visibility: formData.visibility,
+        endsAt: new Date(formData.endsAt).getTime(),
+        createdAt: Date.now(),
+        creator: account,
+      });
+
+      // Navigate to the new raffle
+      router.push(`/raffle/${raffleId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create raffle");
+    }
+  };
 
   return (
     <div>
@@ -206,13 +256,11 @@ export function CreateRaffleForm() {
                 />
               </div>
               <Input
-                label="Duration (hours)"
-                type="number"
-                min="1"
-                max="720"
-                placeholder="24"
-                value={formData.duration}
-                onChange={(e) => update({ duration: e.target.value })}
+                label="Ends At"
+                type="datetime-local"
+                min={new Date(Date.now() + 60000).toISOString().slice(0, 16)}
+                value={formData.endsAt}
+                onChange={(e) => update({ endsAt: e.target.value })}
               />
               {formData.visibility === "private" && (
                 <Input
@@ -267,9 +315,9 @@ export function CreateRaffleForm() {
                     <p className="text-cream font-medium">{levels}</p>
                   </div>
                   <div>
-                    <p className="text-sm text-gray-500">Duration</p>
+                    <p className="text-sm text-gray-500">Ends At</p>
                     <p className="text-cream font-medium">
-                      {formData.duration} hours
+                      {formData.endsAt ? new Date(formData.endsAt).toLocaleString() : "—"}
                     </p>
                   </div>
                   {formData.visibility === "private" && (
@@ -280,6 +328,10 @@ export function CreateRaffleForm() {
                   )}
                 </div>
               </Card>
+
+              {error && (
+                <p className="text-sm text-danger mt-4">{error}</p>
+              )}
             </div>
           )}
         </motion.div>
@@ -308,7 +360,7 @@ export function CreateRaffleForm() {
           <Button
             variant="primary"
             onClick={handleCreate}
-            loading={submitting}
+            loading={creating}
             className="glow-pulse"
           >
             Create Raffle

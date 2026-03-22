@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useCallback } from "react";
+import { use, useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { Button } from "@/components/ui/Button";
@@ -11,64 +11,41 @@ import { RouletteWheel } from "@/components/roulette/RouletteWheel";
 import { DuckRaceTrack } from "@/components/duckrace/DuckRaceTrack";
 import { Confetti } from "@/components/effects/Confetti";
 import { formatAvax, cn } from "@/lib/utils";
-import type { Raffle, RaffleStatus } from "@/lib/types";
-
-// Mock raffle for development
-const MOCK_RAFFLE: Raffle = {
-  id: 1n,
-  mode: "roulette",
-  visibility: "public",
-  title: "Spin to Win #1",
-  ticketPrice: 500000000000000000n,
-  levels: 4,
-  maxSize: 16,
-  nextIndex: 11,
-  root: 0n,
-  open: true,
-  winnerSet: false,
-  winnerIndex: 0,
-  prizePool: 5500000000000000000n,
-  createdAt: Math.floor(Date.now() / 1000) - 86400,
-  endsAt: Math.floor(Date.now() / 1000) + 86400 * 2,
-};
-
-const MOCK_ALIASES = [
-  "SilverFox", "MoonWalker", "CryptoKitty", "NeonNinja",
-  "PixelPunk", "DuckMaster", "GhostRider", "StarDust",
-  "ZenMonk", "IronWolf", "LuckyClover",
-];
-
-const MOCK_WINNER_INDEX = 3;
-
-function getStatus(r: Raffle): RaffleStatus {
-  if (r.open) return "open";
-  if (r.winnerSet) return "completed";
-  return "drawing";
-}
+import { useRaffle } from "@/hooks/useRaffle";
+import { publicClient, getPaginatedLogs, getWalletClient, ensureFujiChain } from "@/lib/viem";
+import { RAFFLE_ABI } from "@/lib/contracts";
+import { RAFFLE_CONTRACT } from "@/lib/constants";
+import type { RaffleStatus } from "@/lib/types";
+import { getRaffleParticipants, getRaffleMetadata } from "@/lib/supabase";
+import { useWallets } from "@privy-io/react-auth";
+import { MerkleTree } from "@/lib/merkle";
 
 function StatusBadge({ status }: { status: RaffleStatus }) {
   const map: Record<RaffleStatus, { variant: "success" | "warning" | "danger" | "neutral"; label: string }> = {
     open: { variant: "success", label: "Open" },
-    drawing: { variant: "warning", label: "Drawing..." },
-    completed: { variant: "neutral", label: "Completed" },
+    closed: { variant: "warning", label: "Closed" },
+    finalized: { variant: "neutral", label: "Finalized" },
     claimed: { variant: "neutral", label: "Claimed" },
   };
   const { variant, label } = map[status];
   return <Badge variant={variant}>{label}</Badge>;
 }
 
-function ParticipantList({ aliases }: { aliases: string[] }) {
+function ParticipantList({ participants }: { participants: { index: number; commitment: string; alias?: string }[] }) {
+  if (participants.length === 0) {
+    return <p className="text-gray-500 text-sm">No participants yet.</p>;
+  }
   return (
     <div className="flex flex-wrap gap-2">
-      {aliases.map((alias, i) => (
+      {participants.map((p, i) => (
         <motion.div
-          key={alias}
+          key={p.index}
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: i * 0.05 }}
           className="px-3 py-1.5 rounded-full border border-gray-700 bg-bg-elevated text-sm text-cream"
         >
-          {alias}
+          {p.alias || `Ticket #${p.index}`}
         </motion.div>
       ))}
     </div>
@@ -102,23 +79,115 @@ export default function RaffleDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  // TODO: Fetch real raffle data using id
-  const [testMode, setTestMode] = useState<"roulette" | "duckrace">(MOCK_RAFFLE.mode);
-  const raffle = { ...MOCK_RAFFLE, mode: testMode };
-  const baseStatus = getStatus(raffle);
-  const fillPercent = Math.round((raffle.nextIndex / raffle.maxSize) * 100);
+  const raffleId = BigInt(id);
+  const { raffle, status: fetchedStatus, loading, error, refetch } = useRaffle(raffleId);
+  const { wallets } = useWallets();
+
+  // Mode comes from Supabase metadata, no longer toggleable
+  const [participants, setParticipants] = useState<{ index: number; commitment: string; alias?: string }[]>([]);
+  const [contractOwner, setContractOwner] = useState<string>("");
+  const [closing, setClosing] = useState(false);
 
   // Draw animation state
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawComplete, setDrawComplete] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
 
-  // Derive the effective status: override with drawing/completed when animating
+  // Metadata from Supabase
+  const [metaTitle, setMetaTitle] = useState(`Raffle #${id}`);
+  const [metaMode, setMetaMode] = useState<"roulette" | "duckrace">("roulette");
+  const [endsAt, setEndsAt] = useState(0);
+
+  // Fetch contract owner
+  useEffect(() => {
+    publicClient.readContract({
+      address: RAFFLE_CONTRACT,
+      abi: RAFFLE_ABI,
+      functionName: "owner",
+    }).then((owner) => setContractOwner((owner as string).toLowerCase()));
+  }, []);
+
+  // Fetch participants from on-chain events
+  useEffect(() => {
+    async function fetchParticipants() {
+      try {
+        const logs = await getPaginatedLogs({
+          address: RAFFLE_CONTRACT,
+          event: {
+            type: "event",
+            name: "TicketDeposited",
+            inputs: [
+              { name: "raffleId", type: "uint256", indexed: true },
+              { name: "index", type: "uint256", indexed: false },
+              { name: "commitment", type: "uint256", indexed: false },
+            ],
+          },
+          args: { raffleId },
+        });
+
+        // Load aliases from Supabase
+        const aliases = await getRaffleParticipants(id);
+        const aliasMap = new Map<number, string>();
+        for (const a of aliases) {
+          aliasMap.set(a.leaf_index, a.alias);
+        }
+
+        const result = logs.map((log) => {
+          const idx = Number(log.args.index);
+          return {
+            index: idx,
+            commitment: "0x" + (log.args.commitment?.toString(16) ?? "0"),
+            alias: aliasMap.get(idx),
+          };
+        });
+
+        setParticipants(result);
+      } catch {
+        // Silently fail — participants list is non-critical
+      }
+    }
+
+    fetchParticipants();
+  }, [raffleId]);
+
+  // Fetch metadata from Supabase
+  useEffect(() => {
+    getRaffleMetadata(id).then((meta) => {
+      if (meta) {
+        setMetaTitle(meta.title || `Raffle #${id}`);
+        setMetaMode(meta.mode || "roulette");
+        if (meta.ends_at) {
+          setEndsAt(meta.ends_at);
+        }
+      }
+    });
+  }, [id]);
+
+  // Poll for state changes so ALL viewers see the draw animation
+  const [prevStatus, setPrevStatus] = useState<RaffleStatus | null>(null);
+  useEffect(() => {
+    if (!raffle) return;
+    // If raffle just transitioned to finalized and we didn't trigger it locally
+    if (fetchedStatus === "finalized" && prevStatus === "open" && !isDrawing && !drawComplete) {
+      setIsDrawing(true);
+      setDrawComplete(false);
+      setShowConfetti(false);
+    }
+    setPrevStatus(fetchedStatus ?? null);
+  }, [fetchedStatus]);
+
+  // Poll contract every 3 seconds while raffle is open
+  useEffect(() => {
+    if (fetchedStatus !== "open") return;
+    const interval = setInterval(() => refetch(), 3000);
+    return () => clearInterval(interval);
+  }, [fetchedStatus, refetch]);
+
   const status: RaffleStatus = isDrawing
-    ? "drawing"
+    ? "closed"
     : drawComplete
-      ? "completed"
-      : baseStatus;
+      ? "finalized"
+      : fetchedStatus ?? "open";
 
   const handleStartDraw = () => {
     setIsDrawing(true);
@@ -132,9 +201,121 @@ export default function RaffleDetailPage({
     setShowConfetti(true);
   }, []);
 
+  const [drawStep, setDrawStep] = useState("");
+
+  const handleDrawWinner = async () => {
+    const wallet = wallets[0];
+    if (!wallet) return;
+    setClosing(true);
+    setDrawStep("");
+    try {
+      const provider = await wallet.getEthereumProvider();
+      await ensureFujiChain(provider);
+      const wc = getWalletClient(provider);
+      const [account] = await wc.getAddresses();
+
+      const commitmentHexes = participants.map((p) => p.commitment);
+      const vrfRandomness = BigInt(Math.floor(Date.now() / 1000));
+      const vrfHex = "0x" + vrfRandomness.toString(16).padStart(64, "0");
+      const raffleIdHex = "0x" + raffleId.toString(16).padStart(64, "0");
+
+      // Step 1: Close raffle on-chain
+      setDrawStep("Closing raffle on-chain...");
+      const closeTx = await wc.writeContract({
+        address: RAFFLE_CONTRACT,
+        abi: RAFFLE_ABI,
+        functionName: "closeRaffle",
+        args: [raffleId, vrfRandomness],
+        account,
+        chain: wc.chain,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: closeTx });
+
+      // Step 2: Generate shuffle proof (server-side via API route)
+      setDrawStep("Generating ZK shuffle proof... (this may take ~30s)");
+      const proofRes = await fetch("/api/shuffle-proof", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commitments: commitmentHexes,
+          vrf_output: vrfHex,
+          raffle_id: raffleIdHex,
+          tree_depth: raffle!.levels,
+        }),
+      });
+
+      if (!proofRes.ok) {
+        const errData = await proofRes.json();
+        throw new Error(errData.error || "Shuffle proof generation failed");
+      }
+
+      const proofData = await proofRes.json();
+
+      // Step 3: Commit shuffle secret on-chain
+      setDrawStep("Committing shuffle secret...");
+      const secretHashBytes32 = proofData.operator_secret_hash as `0x${string}`;
+      const commitTx = await wc.writeContract({
+        address: RAFFLE_CONTRACT,
+        abi: RAFFLE_ABI,
+        functionName: "commitShuffleSecret",
+        args: [raffleId, secretHashBytes32],
+        account,
+        chain: wc.chain,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: commitTx });
+
+      // Step 4: Finalize raffle with shuffle proof on-chain
+      setDrawStep("Finalizing raffle with ZK proof...");
+      const proofBytes = proofData.proof as `0x${string}`;
+      const publicInputs = proofData.publicInputs as `0x${string}`[];
+      const finalizeTx = await wc.writeContract({
+        address: RAFFLE_CONTRACT,
+        abi: RAFFLE_ABI,
+        functionName: "finalizeRaffle",
+        args: [raffleId, proofBytes, publicInputs],
+        account,
+        chain: wc.chain,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: finalizeTx });
+
+      // Start animation
+      setDrawStep("");
+      setIsDrawing(true);
+      setDrawComplete(false);
+      setShowConfetti(false);
+
+      refetch();
+    } catch (err) {
+      console.error("Draw failed:", err);
+      setDrawStep("Error: " + (err instanceof Error ? err.message : "Unknown error"));
+    } finally {
+      setClosing(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+        <p className="text-gray-500 text-center py-20">Loading raffle...</p>
+      </div>
+    );
+  }
+
+  if (error || !raffle) {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+        <p className="text-gray-500 text-center py-20">{error ?? "Raffle not found."}</p>
+      </div>
+    );
+  }
+
+  const mode = metaMode;
+  const title = metaTitle;
+  const fillPercent = Math.round((raffle.nextIndex / raffle.maxSize) * 100);
+  const participantLabels = participants.map((p) => p.alias || `Ticket #${p.index}`);
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
-      {/* Confetti overlay */}
       <Confetti active={showConfetti} />
 
       {/* Header */}
@@ -144,14 +325,14 @@ export default function RaffleDetailPage({
         className="mb-8"
       >
         <div className="flex items-center gap-3 mb-4">
-          <ModeIcon mode={raffle.mode} />
+          <ModeIcon mode={mode} />
           <h1 className="font-heading text-3xl font-bold text-cream">
-            {raffle.title}
+            {title}
           </h1>
           <StatusBadge status={status} />
         </div>
         <p className="text-gray-300 text-sm">
-          Raffle #{id} &middot; {raffle.mode === "duckrace" ? "Duck Race" : "Roulette"} &middot; {raffle.visibility}
+          Raffle #{id} &middot; {mode === "duckrace" ? "Duck Race" : "Roulette"}
         </p>
       </motion.div>
 
@@ -195,7 +376,7 @@ export default function RaffleDetailPage({
       </motion.div>
 
       {/* Drawing animation */}
-      {status === "drawing" && (
+      {status === "closed" && isDrawing && participantLabels.length > 0 && (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -204,17 +385,17 @@ export default function RaffleDetailPage({
         >
           <Card className="p-6">
             <p className="text-center text-sm text-gray-500 mb-4">Drawing winner...</p>
-            {raffle.mode === "roulette" ? (
+            {mode === "roulette" ? (
               <RouletteWheel
-                participants={MOCK_ALIASES}
-                winnerIndex={MOCK_WINNER_INDEX}
+                participants={participantLabels}
+                winnerIndex={raffle.winnerIndex}
                 spinning={isDrawing}
                 onSpinComplete={handleAnimationComplete}
               />
             ) : (
               <DuckRaceTrack
-                participants={MOCK_ALIASES}
-                winnerIndex={MOCK_WINNER_INDEX}
+                participants={participantLabels}
+                winnerIndex={raffle.winnerIndex}
                 racing={isDrawing}
                 onRaceComplete={handleAnimationComplete}
               />
@@ -224,65 +405,72 @@ export default function RaffleDetailPage({
       )}
 
       {/* Countdown & CTA */}
-      {status === "open" && raffle.endsAt > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="mb-8"
-        >
-          <Card className="p-6">
-            <p className="text-sm text-gray-500 mb-4 text-center">Ends in</p>
-            <Countdown
-              targetDate={raffle.endsAt * 1000}
-              className="justify-center mb-6"
-            />
-            {/* Test mode toggle */}
-            <div className="flex justify-center gap-2 mb-4">
-              <button
-                onClick={() => setTestMode("roulette")}
-                className={cn(
-                  "px-4 py-1.5 text-sm font-medium rounded-full border transition-colors cursor-pointer",
-                  testMode === "roulette"
-                    ? "bg-mint/15 border-mint/40 text-mint"
-                    : "border-gray-700 text-gray-300 hover:border-gray-500"
+      {status === "open" && (() => {
+        const isExpired = endsAt > 0 && Date.now() >= endsAt;
+        const isOwner = wallets[0]?.address?.toLowerCase() === contractOwner;
+
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="mb-8"
+          >
+            <Card className="p-6">
+              {endsAt > 0 && !isExpired && (
+                <>
+                  <p className="text-sm text-gray-500 mb-4 text-center">Ends in</p>
+                  <Countdown
+                    targetDate={endsAt}
+                    className="justify-center mb-6"
+                  />
+                </>
+              )}
+              {isExpired && (
+                <p className="text-sm text-yellow-400 mb-4 text-center font-medium">
+                  Raffle ended — waiting for draw
+                </p>
+              )}
+              <div className="flex flex-col sm:flex-row justify-center gap-3">
+                {!isExpired && (
+                  <Link href={`/raffle/${id}/join`}>
+                    <Button variant="primary" size="lg" className="glow-pulse">
+                      Join Raffle &mdash; {formatAvax(raffle.ticketPrice)}
+                    </Button>
+                  </Link>
                 )}
-              >
-                Roulette
-              </button>
-              <button
-                onClick={() => setTestMode("duckrace")}
-                className={cn(
-                  "px-4 py-1.5 text-sm font-medium rounded-full border transition-colors cursor-pointer",
-                  testMode === "duckrace"
-                    ? "bg-mint/15 border-mint/40 text-mint"
-                    : "border-gray-700 text-gray-300 hover:border-gray-500"
+                {isExpired && isOwner && participants.length > 0 && (
+                  <div className="flex flex-col items-center gap-3">
+                    <Button
+                      variant="primary"
+                      size="lg"
+                      onClick={handleDrawWinner}
+                      loading={closing}
+                      disabled={closing}
+                      className="glow-pulse"
+                    >
+                      {closing ? "Drawing..." : "Draw Winner"}
+                    </Button>
+                    {drawStep && (
+                      <p className={`text-sm text-center ${drawStep.startsWith("Error") ? "text-red-400" : "text-gray-400"}`}>
+                        {drawStep}
+                      </p>
+                    )}
+                  </div>
                 )}
-              >
-                Duck Race
-              </button>
-            </div>
-            <div className="flex flex-col sm:flex-row justify-center gap-3">
-              <Link href={`/raffle/${id}/join`}>
-                <Button variant="primary" size="lg" className="glow-pulse">
-                  Join Raffle &mdash; {formatAvax(raffle.ticketPrice)}
-                </Button>
-              </Link>
-              <Button
-                variant="secondary"
-                size="lg"
-                onClick={handleStartDraw}
-                disabled={isDrawing}
-              >
-                Start Draw (Test)
-              </Button>
-            </div>
-          </Card>
-        </motion.div>
-      )}
+                {isExpired && !isOwner && (
+                  <p className="text-gray-500 text-sm text-center">
+                    Waiting for the raffle operator to draw the winner.
+                  </p>
+                )}
+              </div>
+            </Card>
+          </motion.div>
+        );
+      })()}
 
       {/* Winner state */}
-      {status === "completed" && (
+      {(status === "finalized" || drawComplete) && (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -292,7 +480,7 @@ export default function RaffleDetailPage({
           <Card className="p-8 text-center border-mint/30">
             <p className="text-sm text-gray-500 mb-2">Winner</p>
             <p className="font-display text-3xl text-mint mb-4">
-              {MOCK_ALIASES[drawComplete ? MOCK_WINNER_INDEX : raffle.winnerIndex] ?? `Participant #${raffle.winnerIndex}`}
+              {participants.find(p => p.index === raffle.winnerIndex)?.alias || `Ticket #${raffle.winnerIndex}`}
             </p>
             <p className="text-gray-300 mb-6">
               Prize: <span className="text-cream font-semibold">{formatAvax(raffle.prizePool)}</span>
@@ -313,9 +501,9 @@ export default function RaffleDetailPage({
         transition={{ delay: 0.3 }}
       >
         <h2 className="font-heading text-xl font-bold text-cream mb-4">
-          Participants ({MOCK_ALIASES.length})
+          Participants ({participants.length})
         </h2>
-        <ParticipantList aliases={MOCK_ALIASES} />
+        <ParticipantList participants={participants} />
       </motion.div>
     </div>
   );
