@@ -23,9 +23,13 @@ const bungeeShade = Bungee_Shade({
 });
 
 export const metadata: Metadata = {
-  title: "Raffero — Private Raffles on Avalanche",
+  title: "Raffero - Private Raffles on Avalanche",
   description:
-    "Join private, provably-fair raffles powered by zero-knowledge proofs. Spin the roulette or race your duck — your alias, your privacy.",
+    "Join private, provably-fair raffles powered by zero-knowledge prooAfs. Spin the roulette or race your duck — your alias, your privacy.",
+  icons: {
+    icon: "/logos/raffero_blue.png",
+    apple: "/logos/raffero_blue.png",
+  },
 };
 
 export default function RootLayout({

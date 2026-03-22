@@ -3,8 +3,12 @@
 import { usePrivy } from "@privy-io/react-auth";
 import { Button } from "@/components/ui/Button";
 import { shortenAddress } from "@/lib/utils";
+import { PRIVY_APP_ID } from "@/lib/privy";
 
-export function ConnectButton() {
+const isPrivyConfigured =
+  !!PRIVY_APP_ID && !PRIVY_APP_ID.startsWith("YOUR_");
+
+function PrivyConnectButton() {
   const { ready, authenticated, login, logout, user } = usePrivy();
 
   if (!ready) {
@@ -48,4 +52,16 @@ export function ConnectButton() {
       </Button>
     </div>
   );
+}
+
+export function ConnectButton() {
+  if (!isPrivyConfigured) {
+    return (
+      <Button variant="primary" size="sm" disabled className="opacity-60">
+        Wallet (No API Key)
+      </Button>
+    );
+  }
+
+  return <PrivyConnectButton />;
 }

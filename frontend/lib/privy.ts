@@ -19,5 +19,5 @@ export const privyConfig: PrivyClientConfig = {
   defaultChain: avalancheFuji,
 };
 
-/** Privy application ID. Set this before deploying. */
-export const PRIVY_APP_ID = "YOUR_PRIVY_APP_ID";
+/** Privy application ID — set via NEXT_PUBLIC_PRIVY_APP_ID in .env.local */
+export const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID || "";

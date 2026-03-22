@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -16,30 +17,13 @@ const navLinks = [
 function Logo() {
   return (
     <Link href="/" className="flex items-center gap-2 group">
-      <svg
-        width="36"
-        height="36"
-        viewBox="0 0 36 36"
-        fill="none"
+      <Image
+        src="/logos/raffero_transparent_blue.png"
+        alt="Raffero"
+        width={36}
+        height={36}
         className="transition-transform duration-300 group-hover:rotate-12"
-      >
-        <circle
-          cx="18"
-          cy="18"
-          r="16"
-          stroke="#53e3c3"
-          strokeWidth="2.5"
-          fill="none"
-        />
-        <path
-          d="M12 18 C12 14, 14 12, 18 12 C22 12, 24 14, 24 18 C24 22, 22 24, 18 24"
-          stroke="#53e3c3"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          fill="none"
-        />
-        <circle cx="18" cy="18" r="2.5" fill="#53e3c3" />
-      </svg>
+      />
       <span className="font-display text-xl tracking-wide text-cream">
         RAFFERO
       </span>
