@@ -37,16 +37,17 @@ const app = express();
 
 app.use(helmet());
 app.use(express.json({ limit: "1mb" }));
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (server-to-server, curl, etc.)
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin) || process.env.ALLOW_ALL_ORIGINS === "true") {
-      return callback(null, true);
-    }
-    callback(new Error("Not allowed by CORS"));
-  },
-}));
+
+// CORS — handle preflight and actual requests
+if (process.env.ALLOW_ALL_ORIGINS === "true") {
+  app.use(cors());
+} else {
+  app.use(cors({
+    origin: ALLOWED_ORIGINS,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
+  }));
+}
 
 // Rate limiting: max 5 proof requests per minute per IP
 const proofLimiter = rateLimit({
