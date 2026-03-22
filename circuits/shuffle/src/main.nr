@@ -138,19 +138,17 @@ fn fisher_yates_shuffle(
     for iter in 0..CHUNK {
         // We go from n-1 down to 1
         // iter=0 corresponds to i=n-1, iter=1 corresponds to i=n-2, etc.
-        let i = n - 1 - (iter as u32);
         if (iter as u32) < (n - 1) {
+            let i = n - 1 - (iter as u32);
             // Derive a pseudo-random index j in [0, i]
             let hash_val = Poseidon2::hash([seed, iter as Field], 2);
 
             // Convert hash to a bounded index: j = hash_val % (i + 1)
-            // In a field, we use the unsafe_euclidean_div approach
-            let modulus = (i + 1) as Field;
-            let j_field = hash_val % modulus;
-
-            // We need j as an index into the array
-            // Since j_field < modulus < CHUNK, this is safe
-            let j = j_field;
+            // Cast to u64 for modulo since i+1 <= CHUNK (256)
+            let hash_as_int = hash_val as u64;
+            let modulus = (i + 1) as u64;
+            let j_int = hash_as_int % modulus;
+            let j = j_int as Field;
 
             // Swap arr[i] and arr[j]
             // Since Noir doesn't support dynamic indexing easily, we do a conditional copy
