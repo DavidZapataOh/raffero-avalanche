@@ -163,7 +163,7 @@ async function main() {
 
   try {
     execSync(
-      `bb prove -s ultra_honk --oracle_hash keccak -b "${artifactPath}" -w "${witnessPath}" -o "${proofDir}" --output_format bytes`,
+      `bb prove -s ultra_honk --oracle_hash keccak -b "${artifactPath}" -w "${witnessPath}" -o "${proofDir}"`,
       { stdio: ["pipe", "pipe", "pipe"], timeout: 120000 }
     );
   } catch (err) {
